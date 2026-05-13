@@ -15,6 +15,11 @@
 
 #include "AR_FoilControl.h"
 
+#include <AP_HAL/AP_HAL.h>
+#include <AP_Logger/AP_Logger.h>
+#include <AP_Math/AP_Math.h>
+#include <AP_Math/rotations.h>
+
 // PR1 defaults (per research/flight-dev-rig/05-ardufoil-integration.md §5):
 //   FOIL_HGT_TGT 0.10 m (100 mm ride height for 1 m rig / 4 m proto pre-tuning)
 //   FOIL_VTOFF   1.8  m/s
@@ -102,13 +107,53 @@ AR_FoilControl::AR_FoilControl() :
     AP_Param::setup_object_defaults(this, var_info);
 }
 
-// PR1: empty bodies. Real control wiring lands in PR4 (inner), PR5 (outer/throttle),
-// PR6 (failsafe). Behaviour is unchanged from baseline rover.
+// PR2: AHRS/rangefinder plumbing. Inner/outer control bodies still no-op
+// (real control wiring lands in PR4 inner / PR5 outer+throttle / PR6 failsafe).
+// Behaviour remains unchanged from baseline rover.
 // Note: design doc §1 listed `float dt` parameters; the AP_Scheduler SCHED_TASK_CLASS
 // macro requires `void()` signatures, so PR4+ will compute dt internally.
+
+// Read the downward-facing rangefinder. The SITL JSON backend (RNGFND1_TYPE=100,
+// RNGFND1_ORIENT=25 / PITCH_270) is fed by `rng_1` from foilboat_sim.py and
+// reports height above water in metres. Returns NaN when no healthy instance
+// is found (rangefinder absent, out-of-range, dropout) so the caller can
+// distinguish "no data" from a real zero-height reading.
+float AR_FoilControl::get_height_above_water() const
+{
+#if AP_RANGEFINDER_ENABLED
+    const RangeFinder *rf = AP::rangefinder();
+    if (rf == nullptr) {
+        return nanf("");
+    }
+    if (rf->status_orient(ROTATION_PITCH_270) != RangeFinder::Status::Good) {
+        return nanf("");
+    }
+    return rf->distance_orient(ROTATION_PITCH_270);
+#else
+    return nanf("");
+#endif
+}
+
 void AR_FoilControl::update_outer()
 {
-    return;
+    // PR2: exercise the rangefinder path so PR4+ can rely on it.
+    // Read + log + discard. No control output yet.
+    const float height_m = get_height_above_water();
+#if HAL_LOGGING_ENABLED
+    // @LoggerMessage: FOIL
+    // @Description: AR_FoilControl outer-loop telemetry
+    // @Field: TimeUS: Time since system startup
+    // @Field: Hgt: Height above water from downward rangefinder (m), NaN if unhealthy
+    AP::logger().WriteStreaming("FOIL",
+                                "TimeUS,Hgt",
+                                "sm",
+                                "F0",
+                                "Qf",
+                                AP_HAL::micros64(),
+                                height_m);
+#else
+    (void)height_m;
+#endif
 }
 
 void AR_FoilControl::update_inner()

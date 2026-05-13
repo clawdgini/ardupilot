@@ -2,6 +2,7 @@
 
 #include <AP_Common/AP_Common.h>
 #include <AP_Param/AP_Param.h>
+#include <AP_RangeFinder/AP_RangeFinder.h>
 // TODO(PR4): include AC_PID once inner-loop body-rate PIDs wire in.
 // #include <AC_PID/AC_PID.h>
 
@@ -43,6 +44,10 @@ public:
     void set_height_target(float h_m)        { _height_target_m   = h_m; }
     void set_speed_target(float v_ms)        { _speed_target_ms   = v_ms; }
     void set_heading_target_rad(float yaw)   { _heading_target_rad = yaw; }
+
+    // Returns height above water in metres, or NaN if rangefinder is unhealthy / dropped.
+    // Reads from the downward-facing instance configured via RNGFND1_ORIENT = PITCH_270.
+    float get_height_above_water() const;
 
     // parameter var table
     static const struct AP_Param::GroupInfo var_info[];

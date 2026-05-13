@@ -15,3 +15,13 @@ SERVO6_MAX 2000
 SERVO7_FUNCTION 57
 SERVO7_MIN 1000
 SERVO7_MAX 2000
+# PR2: AHRS + rangefinder plumbing for JSON SITL plant.
+# EKF_TYPE=10 uses the JSON-supplied attitude/velocity/position directly,
+# skipping the GPS-fix wait so the 1 m rig boots without a sim GPS lock.
+AHRS_EKF_TYPE 10
+# RNGFND1_TYPE=100 selects the SITL backend, which consumes rng_1 from the
+# JSON plant as height above water in metres.
+RNGFND1_TYPE 100
+# RNGFND1_ORIENT=25 (ROTATION_PITCH_270) marks the instance as downward-facing
+# so AR_FoilControl::get_height_above_water() can look it up via orientation.
+RNGFND1_ORIENT 25
