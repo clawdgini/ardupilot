@@ -15,6 +15,9 @@ bool ModeFoilborneHold::_enter()
     rover.g2.foil_control.set_speed_target(1.9f);
     rover.g2.foil_control.set_heading_target_rad(AP::ahrs().get_yaw_rad());
     rover.g2.foil_control.clear_pitch_target_override();
+    // PR6 §5: reset the failsafe-gate's mode-settle timer so the 2 s arm
+    // delay starts from this boundary, not from boot.
+    rover.g2.foil_control.notify_mode_change();
     return true;
 }
 

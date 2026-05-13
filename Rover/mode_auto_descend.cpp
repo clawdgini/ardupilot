@@ -20,6 +20,7 @@ bool ModeAutoDescend::_enter()
     rover.g2.foil_control.set_speed_target(0.5f);
     rover.g2.foil_control.set_heading_target_rad(AP::ahrs().get_yaw_rad());
     rover.g2.foil_control.clear_pitch_target_override();
+    rover.g2.foil_control.notify_mode_change();
     return true;
 }
 

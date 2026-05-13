@@ -14,6 +14,7 @@ bool ModeHullBorne::_enter()
     // default targets: drift speed, heading = current yaw, no height target.
     rover.g2.foil_control.set_speed_target(0.0f);
     rover.g2.foil_control.set_heading_target_rad(AP::ahrs().get_yaw_rad());
+    rover.g2.foil_control.notify_mode_change();
     return true;
 }
 

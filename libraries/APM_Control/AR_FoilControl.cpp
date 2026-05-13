@@ -38,12 +38,20 @@
 #define AR_FOILCONTROL_HGT_D            0.20f
 
 // Inner body-rate PID defaults (PR4 baseline — V^2 scheduled at runtime).
-//   q-axis (pitch rate): Kp=0.19, Ki=0.02, Kd=0
+//   q-axis (pitch rate): Kp=0.19, Ki=0.02, Kd=0.04  (PR6: Kd_θ folded in here)
 //   p-axis (roll  rate): Kp=0.04, Ki=0.005, Kd=0
 //   r-axis (yaw   rate): Kp=1.2,  Ki=0.3,  Kd=0
+//
+// Kd_q default (0.04) is the analytical estimate from closed-loop ω_n=30 rad/s,
+// ζ=0.7 design intent for the pitch cascade (Kd_outer = 2ζω/G then mapped onto
+// the rate loop's plant gain). The codebase expert flagged two derivations that
+// disagree (0.009 vs 0.04); SITL closed-loop step-response sweep across
+// {0.01, 0.02, 0.04, 0.08} is queued behind plant v0.2. Until that sweep
+// runs, 0.04 is the conservative default — high enough to add damping, low
+// enough that the rate loop stays causal at 400 Hz with a 20 Hz D-filter.
 #define AR_FOILCONTROL_Q_RATE_P         0.19f
 #define AR_FOILCONTROL_Q_RATE_I         0.02f
-#define AR_FOILCONTROL_Q_RATE_D         0.00f
+#define AR_FOILCONTROL_Q_RATE_D         0.04f
 #define AR_FOILCONTROL_Q_RATE_FF        0.00f
 #define AR_FOILCONTROL_Q_RATE_IMAX      0.20f
 
@@ -59,27 +67,27 @@
 #define AR_FOILCONTROL_R_RATE_FF        0.00f
 #define AR_FOILCONTROL_R_RATE_IMAX      0.40f
 
-// Pitch attitude PID (§1.1).  Kd term applied externally on body rate q.
+// Pitch attitude PID (§1.1).  PR6: Kd_θ moved onto the inner pitch-rate PID
+// (canonical AC_PID idiom), so the outer pitch wrapper has Kd=0 here.
+// Ki=0.5 stays in place as the §2.2 lift-trim integrator hook.
 #define AR_FOILCONTROL_THETA_P          4.00f
 #define AR_FOILCONTROL_THETA_I          0.50f
-#define AR_FOILCONTROL_THETA_D          0.00f      // D-on-q applied manually below
+#define AR_FOILCONTROL_THETA_D          0.00f
 #define AR_FOILCONTROL_THETA_FF         0.00f
 #define AR_FOILCONTROL_THETA_IMAX       2.00f
-#define AR_FOILCONTROL_THETA_KD_Q       0.19f      // manual D coefficient: u -= Kd_theta * q
 
-// Roll attitude PID (§1.2).
+// Roll attitude PID (§1.2).  Kd_φ=0.04 is on dφ/dt, which is what AC_PID's
+// D-on-error path computes (target φ_cmd is constant in v0, so dφ/dt = -de/dt
+// up to sign and AC_PID's D filter cleans it).
 #define AR_FOILCONTROL_PHI_P            0.60f
 #define AR_FOILCONTROL_PHI_I            0.05f
 #define AR_FOILCONTROL_PHI_D            0.04f
 #define AR_FOILCONTROL_PHI_FF           0.00f
 #define AR_FOILCONTROL_PHI_IMAX         0.50f
 
-// Heading PID (no explicit spec gains — first-cut: Kp=1.0, Ki=0, Kd=0 per §1.3 note).
+// Heading P controller (§1.3 first-cut: Kp=1.0).
+// PR6: AC_P (no I, no D) — matches AR_AttitudeControl::_steer_angle_p.
 #define AR_FOILCONTROL_PSI_P            1.00f
-#define AR_FOILCONTROL_PSI_I            0.00f
-#define AR_FOILCONTROL_PSI_D            0.00f
-#define AR_FOILCONTROL_PSI_FF           0.00f
-#define AR_FOILCONTROL_PSI_IMAX         1.00f
 
 // Speed PID (§1.5).  Output is in 0..1 throttle fraction.
 #define AR_FOILCONTROL_V_P              0.35f
@@ -100,6 +108,27 @@
 #define AR_FOILCONTROL_VCRUISE          3.7f
 #define AR_FOILCONTROL_VMIN_SCHED       0.5f
 
+// Pre-load schedule defaults (PR6, §4 revised by controls expert).
+// V_TO 1.6 m/s, canard peak +4° (was +6°: leaves 2° margin to α_stall at
+// V_TO when canard rigging +3° + θ at take-off +3° + pre-load 4° = 10° AoA),
+// main peak +2°. Schedule shape: canard quadratic in V/V_TO, main linear.
+#define AR_FOILCONTROL_VTO              1.6f
+#define AR_FOILCONTROL_PRE_CAN_RAD      0.0698132f   // radians(4.0)
+#define AR_FOILCONTROL_PRE_MAIN_RAD     0.0349066f   // radians(2.0)
+
+// V² scheduling floor (PR6, §3 piecewise). Applied above V_cruise so the
+// schedule doesn't drop below 0.25× the nominal gain — high-speed plant has
+// plenty of authority but we still want a finite controller bandwidth.
+#define AR_FOILCONTROL_SCHED_FLOOR      0.25f
+
+// Canard lead compensator (PR6, §4). H(s) = (1 + 0.060 s) / (1 + 0.015 s).
+// Zero at 16.7 rad/s (≈ servo pole 1/τ_servo at 55 ms = 18 rad/s),
+// pole at 66.7 rad/s (≈ 4× the servo pole). Restores ~35° PM at ω∈[25,35]
+// after the servo lag drops it from ~80° to ~22°.
+#define AR_FOILCONTROL_LEAD_LD          0.060f
+#define AR_FOILCONTROL_LEAD_LG          0.015f
+#define AR_FOILCONTROL_LEAD_EN          1
+
 // pilot stick scale: full deflection maps to ±2 rad/s body-rate setpoint.
 // (Still used for HULL_BORNE / pilot inputs in lieu of an attitude command.)
 #define AR_FOILCONTROL_PILOT_RATE_SCALE 2.0f
@@ -116,6 +145,11 @@
 #define AR_FOILCONTROL_THETA_CMD_LIMIT_RAD 0.105f
 // §5.3 cascade dwell threshold before height integrator freezes.
 #define AR_FOILCONTROL_PITCH_SAT_DWELL_S   0.20f
+// PR6 §5: continuous-saturation latch dwell (must hold for this long with
+// _sat_trigger_armed=true before AUTO_DESCEND is requested).
+#define AR_FOILCONTROL_CONT_SAT_LATCH_S    0.50f
+// PR6 §5: settle window after a mode change before failsafe arms.
+#define AR_FOILCONTROL_MODE_SETTLE_S       2.0f
 
 // SRV_Channels::set_angle takes uint16_t centidegree half-range.
 #define AR_FOILCONTROL_SRV_ANGLE_CD      2500
@@ -199,20 +233,24 @@ const AP_Param::GroupInfo AR_FoilControl::var_info[] = {
 
     // @Group: PIT_
     // @Path: ../AC_PID/AC_PID.cpp
-    // Pitch attitude PID (PR5) — theta_cmd → q_setpoint. AC_PID's internal D
-    // is held at zero; a manual D-on-q term (FOIL_KD_THETA · q) is subtracted
-    // outside the PID per §1.1 ("Kd is on q (rate), not on dθ/dt").
+    // Pitch attitude PID (PR5) — theta_cmd → q_setpoint.
+    // PR6: Kd_θ moved to FOIL_Q_RAT_D on the inner pitch-rate PID (canonical
+    // AC_PID idiom). FOIL_KD_THETA is removed; FOIL_PIT_D remains 0.
     AP_SUBGROUPINFO(_theta_pid, "PIT_", 12, AR_FoilControl, AC_PID),
 
     // @Group: YAW_
-    // @Path: ../AC_PID/AC_PID.cpp
-    // Heading PID (PR5) — psi_cmd → r_setpoint, first-cut Kp=1.0.
-    AP_SUBGROUPINFO(_psi_pid, "YAW_", 13, AR_FoilControl, AC_PID),
+    // @Path: ../AC_PID/AC_P.cpp
+    // Heading P controller (PR5/PR6) — psi_cmd → r_setpoint, first-cut Kp=1.0.
+    // PR6: refactored from AC_PID to AC_P (Ki_ψ=Kd_ψ=0 per spec). Slot index
+    // 13 reused so FOIL_YAW_P retains the same key; FOIL_YAW_{I,D,IMAX} are
+    // dropped (they didn't have an effect in PR5 anyway — Ki/Kd were 0).
+    AP_SUBGROUPINFO(_psi_p, "YAW_", 13, AR_FoilControl, AC_P),
 
     // @Param: VCRUISE
     // @DisplayName: V^2 scheduling cruise speed
     // @Description: Reference cruise speed for V^2 gain scheduling (m/s).
-    // Pitch/roll attitude + rate-loop gains are multiplied by (VCRUISE / max(V, VMINSCHD))^2.
+    // Pitch/roll attitude + rate-loop gains are multiplied by piecewise V^2
+    // schedule centred on this speed (see FOIL_SCHED_FL for the floor).
     // @Units: m/s
     // @Range: 0.5 10.0
     // @Increment: 0.1
@@ -229,14 +267,81 @@ const AP_Param::GroupInfo AR_FoilControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("VMINSCHD",   15, AR_FoilControl, _vmin_sched, AR_FOILCONTROL_VMIN_SCHED),
 
-    // @Param: KD_THETA
-    // @DisplayName: Pitch attitude D-on-q coefficient
-    // @Description: Manual derivative coefficient applied to body pitch rate q
-    // inside the pitch attitude wrapper (rad-flap per rad/s). See 04-control-law.md §1.1.
-    // @Range: 0.0 1.0
-    // @Increment: 0.01
+    // Slot 16: previously FOIL_KD_THETA (PR5 manual D-on-q term).
+    // PR6: removed — Kd_θ is now FOIL_Q_RAT_D (the inner pitch-rate PID's D
+    // gain). Slot key intentionally left unused so a later PR can repurpose
+    // it without colliding with cached EEPROM keys on existing field rigs.
+
+    // @Param: VTO
+    // @DisplayName: Foilborne take-off reference speed
+    // @Description: V_TO used by the pre-load schedule (rad/(m/s)) — canard
+    // pre-load peaks at V=VTO (quadratic), main at V=VTO (linear). Also used
+    // as the freeze threshold for the V² gain schedule.
+    // @Units: m/s
+    // @Range: 0.5 10.0
+    // @Increment: 0.1
     // @User: Advanced
-    AP_GROUPINFO("KD_THETA",   16, AR_FoilControl, _kd_theta, AR_FOILCONTROL_THETA_KD_Q),
+    AP_GROUPINFO("VTO",        17, AR_FoilControl, _vto, AR_FOILCONTROL_VTO),
+
+    // @Param: PRE_CAN
+    // @DisplayName: Canard pre-load peak
+    // @Description: Canard flap deflection at V=V_TO before foilborne engage
+    // (rad). Positive = trailing-edge-down = lift up. Quadratic in V/V_TO.
+    // Default 0.0698 rad (4°) leaves 2° margin to α_stall at V_TO.
+    // @Units: rad
+    // @Range: 0.0 0.175
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("PRE_CAN",    18, AR_FoilControl, _pre_can, AR_FOILCONTROL_PRE_CAN_RAD),
+
+    // @Param: PRE_MAIN
+    // @DisplayName: Main pre-load peak
+    // @Description: Main flap deflection at V=V_TO before foilborne engage
+    // (rad). Linear in V/V_TO. Default 0.0349 rad (2°).
+    // @Units: rad
+    // @Range: 0.0 0.175
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("PRE_MAIN",   19, AR_FoilControl, _pre_main, AR_FOILCONTROL_PRE_MAIN_RAD),
+
+    // @Param: SCHED_FL
+    // @DisplayName: V² schedule floor
+    // @Description: Lower bound on the V² gain scale applied above V_cruise.
+    // Without this, scale → 0 at very high V, dropping controller bandwidth
+    // unacceptably. Default 0.25 (controller runs at 25% of nominal at high V).
+    // @Range: 0.0 1.0
+    // @Increment: 0.05
+    // @User: Advanced
+    AP_GROUPINFO("SCHED_FL",   20, AR_FoilControl, _sched_floor, AR_FOILCONTROL_SCHED_FLOOR),
+
+    // @Param: LEAD_LD
+    // @DisplayName: Canard lead compensator lead time constant
+    // @Description: Lead time constant of the canard lead-lag compensator
+    // H(s)=(1+τ_lead·s)/(1+τ_lag·s) applied downstream of the mixer. Default
+    // 0.060 s places the zero at ~17 rad/s (just below the servo pole).
+    // @Units: s
+    // @Range: 0.0 0.5
+    // @Increment: 0.005
+    // @User: Advanced
+    AP_GROUPINFO("LEAD_LD",    21, AR_FoilControl, _lead_tau_lead, AR_FOILCONTROL_LEAD_LD),
+
+    // @Param: LEAD_LG
+    // @DisplayName: Canard lead compensator lag time constant
+    // @Description: Lag time constant of the canard lead-lag compensator.
+    // Default 0.015 s places the pole at ~67 rad/s (~4× the servo pole).
+    // @Units: s
+    // @Range: 0.0 0.5
+    // @Increment: 0.005
+    // @User: Advanced
+    AP_GROUPINFO("LEAD_LG",    22, AR_FoilControl, _lead_tau_lag, AR_FOILCONTROL_LEAD_LG),
+
+    // @Param: LEAD_EN
+    // @DisplayName: Canard lead compensator enable
+    // @Description: Enable (1) / bypass (0) the canard lead compensator. For
+    // A/B testing the PM-recovery delta.
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("LEAD_EN",    23, AR_FoilControl, _lead_en, AR_FOILCONTROL_LEAD_EN),
 
     AP_GROUPEND
 };
@@ -260,9 +365,7 @@ AR_FoilControl::AR_FoilControl() :
     _theta_pid(AR_FOILCONTROL_THETA_P, AR_FOILCONTROL_THETA_I, AR_FOILCONTROL_THETA_D,
                AR_FOILCONTROL_THETA_FF, AR_FOILCONTROL_THETA_IMAX,
                AR_FOILCONTROL_ATT_FILT_T_HZ, AR_FOILCONTROL_ATT_FILT_E_HZ, AR_FOILCONTROL_ATT_FILT_D_HZ),
-    _psi_pid(AR_FOILCONTROL_PSI_P, AR_FOILCONTROL_PSI_I, AR_FOILCONTROL_PSI_D,
-             AR_FOILCONTROL_PSI_FF, AR_FOILCONTROL_PSI_IMAX,
-             AR_FOILCONTROL_ATT_FILT_T_HZ, AR_FOILCONTROL_ATT_FILT_E_HZ, AR_FOILCONTROL_ATT_FILT_D_HZ),
+    _psi_p(AR_FOILCONTROL_PSI_P),
     _h_integrator(0.0f),
     _h_last_theta_cmd(0.0f),
     _height_target_m(AR_FOILCONTROL_HGT_TARGET),
@@ -283,15 +386,26 @@ AR_FoilControl::AR_FoilControl() :
     _nom_r_rate_kp(0), _nom_r_rate_ki(0), _nom_r_rate_kd(0),
     _nom_phi_kp(0),    _nom_phi_ki(0),    _nom_phi_kd(0),
     _nom_theta_kp(0),  _nom_theta_ki(0),  _nom_theta_kd(0),
+    _nom_psi_kp(0),
     _nominal_gains_captured(false),
+    _last_gain_scale(1.0f),
     _pitch_sat_dwell_s(0.0f),
     _pitch_saturated(false),
     _foilborne_now(false),
     _foilborne_engage_s(0.0f),
     _engage_factor(0.0f),
+    _canard_preload_last(0.0f),
+    _lead_x_prev(0.0f),
+    _lead_y_prev(0.0f),
+    _sat_trigger_armed(false),
+    _continuous_sat_s(0.0f),
+    _t_since_mode_change_s(0.0f),
+    _last_mode_num_seen(0xff),
     _last_inner_us(0),
     _last_outer_us(0),
     _last_throttle_us(0),
+    _last_failsafe_us(0),
+    _last_inner_dt(0.0025f),
     _servo_ranges_set(false)
 {
     _singleton = this;
@@ -318,7 +432,34 @@ void AR_FoilControl::capture_nominal_gains()
     _nom_theta_kp  = _theta_pid.kP();
     _nom_theta_ki  = _theta_pid.kI();
     _nom_theta_kd  = _theta_pid.kD();
+    _nom_psi_kp    = _psi_p.kP();
     _nominal_gains_captured = true;
+}
+
+// Piecewise V² gain scale (PR6, §3).
+//   V ≤ V_TO            → frozen at (Vc/Vto)² (prevents 1/V² blow-up + replaces
+//                         the PR5 4× hard cap with a value derived from spec).
+//   V_TO < V ≤ V_cruise → (Vc/V)² (canonical V² schedule, peaks at 1.0 at Vc).
+//   V > V_cruise        → max((Vc/V)², FOIL_SCHED_FL) (clamps the high-V tail).
+float AR_FoilControl::gain_scale(float V) const
+{
+    const float Vc  = MAX(_vcruise.get(), 0.1f);
+    const float Vto = MAX(_vto.get(),     0.1f);
+    const float frozen = (Vc / Vto) * (Vc / Vto);
+    if (V <= Vto) {
+        return frozen;
+    }
+    if (V <= Vc) {
+        const float r = Vc / V;
+        return r * r;
+    }
+    const float r = Vc / V;
+    float s = r * r;
+    const float floor_s = _sched_floor.get();
+    if (s < floor_s) {
+        s = floor_s;
+    }
+    return s;
 }
 
 void AR_FoilControl::apply_vsq_scheduling()
@@ -327,31 +468,17 @@ void AR_FoilControl::apply_vsq_scheduling()
         capture_nominal_gains();
     }
     // Pre-foilborne: foils have no usable authority and the V² formula
-    // blows up (×54 at V=Vmin); use the nominal gains so the rate loop can
-    // run at safe magnitudes while the boat is hull-borne.
+    // returns the "frozen" multiplier (Vc/Vto)² which is large (~5.35) but
+    // bounded by the AC_PID kP/kI/kD setters; we still rely on
+    // _foilborne_now-gated integrators upstream to prevent windup.
     float scale = 1.0f;
     if (_foilborne_now) {
-        // Forward speed from AHRS (m/s).  groundspeed() is GPS-fused; with
-        // AHRS_EKF_TYPE=10 it reflects the JSON-supplied velocity directly.
         const float v = AP::ahrs().groundspeed();
-        const float v_min = MAX(_vmin_sched.get(), 0.1f);
-        const float v_eff = MAX(v, v_min);
-        const float vc    = MAX(_vcruise.get(), v_min);  // never let Vc < Vmin
-        const float ratio = vc / v_eff;
-        scale = ratio * ratio;  // V^2 schedule per §1.1
-        // Cap the scheduling multiplier.  Spec §6 q6 acknowledges that the
-        // raw schedule needs Monte-Carlo verification across V∈[1,4] m/s.
-        // Until that work lands (post-PR5), clamp the multiplier to 4× as
-        // a defensive gain ceiling.
-        const float SCHED_MAX = 4.0f;
-        if (scale > SCHED_MAX) {
-            scale = SCHED_MAX;
-        }
+        scale = gain_scale(v);
     }
+    _last_gain_scale = scale;
 
-    // Rate loops + pitch/roll attitude wrappers.  Yaw / heading / speed / height
-    // loops are intentionally NOT scheduled (no aerodynamic q-dependence in
-    // their plant gains, per spec).
+    // Rate loops + pitch/roll attitude wrappers.
     _p_rate_pid.set_kP(_nom_p_rate_kp * scale);
     _p_rate_pid.set_kI(_nom_p_rate_ki * scale);
     _p_rate_pid.set_kD(_nom_p_rate_kd * scale);
@@ -367,6 +494,61 @@ void AR_FoilControl::apply_vsq_scheduling()
     _theta_pid.set_kP(_nom_theta_kp * scale);
     _theta_pid.set_kI(_nom_theta_ki * scale);
     _theta_pid.set_kD(_nom_theta_kd * scale);
+    // Yaw P controller — same scale.
+    _psi_p.set_kP(_nom_psi_kp * scale);
+}
+
+// Canard pre-load (PR6, §4). Quadratic in V/V_TO so the canard sees small
+// deflection during the speed-build where induced w from bow-down hull pitch
+// drives α_canard up; deflection ramps in toward V_TO where the lift authority
+// is needed.
+float AR_FoilControl::canard_preload_rad(float V) const
+{
+    if (V <= 0.0f) return 0.0f;
+    const float vto = MAX(_vto.get(), 0.1f);
+    float v_norm = V / vto;
+    if (v_norm > 1.0f) v_norm = 1.0f;
+    return _pre_can.get() * v_norm * v_norm;
+}
+
+// Main pre-load (PR6, §4). Linear in V/V_TO — main foil is aft of CG and
+// produces nose-down moment for positive deflection, so its quadratic-vs-
+// linear shape is less critical than the canard's.
+float AR_FoilControl::main_preload_rad(float V) const
+{
+    if (V <= 0.0f) return 0.0f;
+    const float vto = MAX(_vto.get(), 0.1f);
+    float v_norm = V / vto;
+    if (v_norm > 1.0f) v_norm = 1.0f;
+    return _pre_main.get() * v_norm;
+}
+
+// Tustin/bilinear discretisation of H(s) = (1 + τ_lead·s) / (1 + τ_lag·s).
+// y[n] = b0·x[n] + b1·x[n-1] - a1·y[n-1], with
+//   a = 2/T, denom = 1 + τ_lag·a
+//   b0 = (1 + τ_lead·a) / denom
+//   b1 = (1 - τ_lead·a) / denom
+//   a1 = (1 - τ_lag·a)  / denom
+float AR_FoilControl::canard_lead(float x)
+{
+    if (!_lead_en) {
+        // Bypass: pass-through, also reset state so a re-enable later is bumpless.
+        _lead_x_prev = x;
+        _lead_y_prev = x;
+        return x;
+    }
+    const float T = MAX(_last_inner_dt, 0.0005f);   // floor at 0.5 ms for safety
+    const float a = 2.0f / T;
+    const float tau_ld = _lead_tau_lead.get();
+    const float tau_lg = _lead_tau_lag.get();
+    const float denom = 1.0f + tau_lg * a;
+    const float b0 = (1.0f + tau_ld * a) / denom;
+    const float b1 = (1.0f - tau_ld * a) / denom;
+    const float a1 = (1.0f - tau_lg * a) / denom;
+    const float y = b0 * x + b1 * _lead_x_prev - a1 * _lead_y_prev;
+    _lead_x_prev = x;
+    _lead_y_prev = y;
+    return y;
 }
 
 void AR_FoilControl::init()
@@ -415,10 +597,8 @@ void AR_FoilControl::update_outer()
         dt = 0.01f;  // first call: 100 Hz nominal
         _theta_pid.reset_filter();
         _phi_pid.reset_filter();
-        _psi_pid.reset_filter();
         _theta_pid.reset_I();
         _phi_pid.reset_I();
-        _psi_pid.reset_I();
         _h_integrator = 0.0f;
         _h_last_theta_cmd = 0.0f;
     } else {
@@ -493,9 +673,7 @@ void AR_FoilControl::update_outer()
                                         -AR_FOILCONTROL_THETA_CMD_LIMIT_RAD,
                                         AR_FOILCONTROL_THETA_CMD_LIMIT_RAD);
 
-        // u = Kp*err + I  - Kd*ż_up    (sign: pitch-up to climb when h<h_cmd
-        //                                AND when descending: zdot_up<0 means we
-        //                                want extra pitch-up, so subtract zdot)
+        // u = Kp*err + I  - Kd*ż_up
         const float u_p = _h_p.get() * h_err;
         const float u_d = -_h_d.get() * zdot_up;
         float u = u_p + _h_integrator + u_d;
@@ -514,18 +692,18 @@ void AR_FoilControl::update_outer()
     }
     _theta_cmd_rad = theta_cmd_rad;
 
-    // --- Heading PID -> yaw-rate target -----------------------------------
-    // Wrap heading error on ±π so we always take the short way round.
+    // --- Heading P controller -> yaw-rate target --------------------------
+    // PR6: yaw outer is now AC_P (no integrator, no derivative). Wrap heading
+    // error on ±π so we always take the short way round.
     const float yaw_meas = AP::ahrs().get_yaw_rad();
     const float yaw_err = wrap_PI(_heading_target_rad - yaw_meas);
-    // Pre-foilborne: hold rudder at zero and bleed integrator (rudder T-foil
-    // has near-zero authority below V_TO).
+    // Pre-foilborne: hold rudder at zero (rudder T-foil has near-zero
+    // authority below V_TO).
     if (!foilborne_now) {
-        _psi_pid.reset_I();
         _r_setpoint_rad_s = 0.0f;
     } else {
-        const float r_set = _psi_pid.update_error(yaw_err, dt, false) * engage;
-        _r_setpoint_rad_s = constrain_float(r_set, -3.0f, 3.0f);  // clamp body-rate target ±3 rad/s
+        const float r_set = _psi_p.get_p(yaw_err) * engage;
+        _r_setpoint_rad_s = constrain_float(r_set, -3.0f, 3.0f);
     }
 
     // --- Roll attitude PID -> roll-rate target ----------------------------
@@ -563,6 +741,19 @@ void AR_FoilControl::update_outer()
                                 _theta_cmd_rad,
                                 _p_setpoint_rad_s,
                                 _r_setpoint_rad_s);
+    // PR6 extension: Preld (canard preload rad), SchS (gain scale active
+    // multiplier), SatA (sat_trigger_armed). Kept as a separate streaming
+    // message to avoid touching the PR5 FOIL schema until PR7 lands the full
+    // LogStructure with all PR6 fields.
+    AP::logger().WriteStreaming("FOI2",
+                                "TimeUS,Preld,SchS,SatA",
+                                "srr-",
+                                "F000",
+                                "QffB",
+                                AP_HAL::micros64(),
+                                _canard_preload_last,
+                                _last_gain_scale,
+                                (uint8_t)_sat_trigger_armed);
 #endif
 }
 
@@ -587,37 +778,30 @@ void AR_FoilControl::update_inner()
         dt = constrain_float(dt, 0.001f, 0.01f);
     }
     _last_inner_us = now_us;
+    _last_inner_dt = dt;
 
-    // V^2 gain schedule before each tick (cheap; touches AC_PID's AP_Float
-    // backing so the parameter view still reads the user value -- we mutate
-    // the in-RAM copy only).
+    // V^2 gain schedule before each tick.
     apply_vsq_scheduling();
 
     // Body rates p, q, r in rad/s.
     const Vector3f gyro = AP::ahrs().get_gyro();
+    const float q_meas  = gyro.y;
 
     // --- Pitch attitude wrapper (400 Hz) ----------------------------------
-    // θ_cmd -> q_setpoint via P+I PID, then manual -Kd*q derivative-on-rate.
+    // θ_cmd -> q_setpoint via P+I PID.  PR6: the manual `-Kd_θ·q` term is
+    // gone — Kd_θ is now Kd on the inner pitch-rate PID (canonical AC_PID).
     // Pre-foilborne: zero the rate target and bleed the theta integrator.
-    // The foils have no authority in the water, so pitch tracking is futile
-    // and the integrator would wind up against the hull stiffness.
     const float theta_meas = AP::ahrs().get_pitch_rad();
-    const float q_meas     = gyro.y;
     if (!_foilborne_now) {
         _theta_pid.reset_I();
         _q_setpoint_rad_s = 0.0f;
     } else {
         float q_set       = _theta_pid.update_all(_theta_cmd_rad, theta_meas, dt);
-        q_set            -= _kd_theta.get() * q_meas;       // D-on-q (§1.1)
         q_set            *= _engage_factor;                  // soft-engage at transition
         _q_setpoint_rad_s = constrain_float(q_set, -6.0f, 6.0f);
     }
 
     // --- Pilot stick fallback when no outer setpoint has been published ---
-    // If the outer loop hasn't run yet (first 1-2 ticks), or the user is in a
-    // mode that didn't override theta/heading, use the RC stick directly so
-    // the rig stays controllable.  PR5: in foilborne mode the outer loop has
-    // already populated the setpoints, so this branch is only hit at startup.
     if (_last_outer_us == 0 && rc().has_valid_input()) {
         const float p_stick = rc().get_roll_channel().norm_input_dz()  * AR_FOILCONTROL_PILOT_RATE_SCALE;
         const float q_stick = rc().get_pitch_channel().norm_input_dz() * AR_FOILCONTROL_PILOT_RATE_SCALE;
@@ -628,23 +812,12 @@ void AR_FoilControl::update_inner()
     }
 
     // --- Body-rate PIDs ---------------------------------------------------
-    // Pass `limit=true` to AC_PID's integrator when not foilborne — the foils
-    // have no authority so any "error" the rate loop sees is hull-stiffness
-    // residual, not something the controller can act on.  AC_PID's limit=true
-    // mode lets the integrator shrink toward zero but blocks growth (one-sided
-    // back-calculation).  Combined with the per-tick theta=0 setpoint, this
-    // converges the rate-loop integrators to zero in the water.
     const bool rate_limit = !_foilborne_now;
     const float p_out = _p_rate_pid.update_all(_p_setpoint_rad_s, gyro.x, dt, rate_limit);
     const float q_out = _q_rate_pid.update_all(_q_setpoint_rad_s, q_meas,  dt, rate_limit);
     const float r_out = _r_rate_pid.update_all(_r_setpoint_rad_s, gyro.z,  dt, rate_limit);
 
     // --- Mixer (§2.1) -----------------------------------------------------
-    // Pitch mix uses q_out (rad/s of pitch-rate-equivalent flap demand).
-    // Roll diff uses p_out — only emitted to the differential channel; the
-    // single-main-flap v0 rig does NOT route p_out into the main flap
-    // (see §2 of 04-control-law.md and §6 open question 3).  We compute it
-    // here so the v1 dual-surface main inherits the wiring without churn.
     float pitch_mix_cmd = q_out;
     float roll_diff_cmd = p_out;
     float rudder_cmd_raw = r_out;
@@ -670,19 +843,46 @@ void AR_FoilControl::update_inner()
         _pitch_saturated = false;
     }
 
-    // Mixer outputs (§2.1):
-    //   canard      = +k_pc · pitch_mix_cmd      (roll term reserved for v1)
-    //   main        = -k_pm · pitch_mix_cmd      (v0: no differential roll on
-    //                                              the single main flap)
+    // --- Mixer outputs (§2.1) --------------------------------------------
+    //   canard      = +k_pc · pitch_mix_cmd
+    //   main        = -k_pm · pitch_mix_cmd
     //   rudder      = rudder_cmd
-    // When the v1 dual-surface main lands, replace the single _main_cmd_rad
-    // with split left/right channels that add ±roll_diff_cmd respectively.
     float canard_cmd = +AR_FOILCONTROL_MIX_K_PC * pitch_mix_cmd;
     float main_cmd   = -AR_FOILCONTROL_MIX_K_PM * pitch_mix_cmd;
     float rudder_cmd =  rudder_cmd_raw;
 
-    // Per-channel mechanical clamp (defence-in-depth; pitch_mix already
-    // bounded so this only bites on lift_trim / future contributions).
+    // --- PR6 §4: pre-load feed-forward + foilborne engage taper -----------
+    // Pre-load bypasses the pitch integrator so it acts as a feed-forward
+    // bias the rate-loop integrator never sees. Schedule:
+    //   HULL_BORNE: pre-load is the ONLY canard/main command (no PID).
+    //   FOILBORNE engage ramp: scale pre-load by (1 - engage_factor) so it
+    //     fades out as the PID takes over.
+    //   FOILBORNE steady: pre-load = 0.
+    const float V = AP::ahrs().groundspeed();
+    const float canard_pl = canard_preload_rad(V);
+    const float main_pl   = main_preload_rad(V);
+    _canard_preload_last = canard_pl;
+    if (!_foilborne_now) {
+        // Hull-borne: only the pre-load drives the surfaces; rate-PID outputs
+        // (q_out etc.) ride on top of zero engage_factor on the rate setpoints
+        // anyway, but be explicit here so the wiring is clear.
+        canard_cmd = canard_pl;
+        main_cmd   = main_pl;
+    } else {
+        // Foilborne: PID + (1 - engage)*pre-load. engage_factor ramps 0->1
+        // over the first 1 s of foilborne, so this term smoothly fades out.
+        const float fade = 1.0f - _engage_factor;
+        canard_cmd += fade * canard_pl;
+        main_cmd   += fade * main_pl;
+    }
+
+    // --- PR6 §4 canard lead compensator ----------------------------------
+    // H(s) = (1 + 0.060·s) / (1 + 0.015·s).  Applied between mixer and the
+    // ±25° clamp so the compensator sees the full mixer-shaped command but
+    // the output is still hard-bounded by the mechanical limit.
+    canard_cmd = canard_lead(canard_cmd);
+
+    // Per-channel mechanical clamp (defence-in-depth).
     _canard_cmd_rad = constrain_float(canard_cmd, -AR_FOILCONTROL_FLAP_LIMIT_RAD, +AR_FOILCONTROL_FLAP_LIMIT_RAD);
     _main_cmd_rad   = constrain_float(main_cmd,   -AR_FOILCONTROL_FLAP_LIMIT_RAD, +AR_FOILCONTROL_FLAP_LIMIT_RAD);
     _rudder_cmd_rad = constrain_float(rudder_cmd, -AR_FOILCONTROL_FLAP_LIMIT_RAD, +AR_FOILCONTROL_FLAP_LIMIT_RAD);
@@ -716,19 +916,76 @@ void AR_FoilControl::update_throttle()
     float throttle = _v_pid.update_all(_speed_target_ms, v_meas, dt);
     throttle = constrain_float(throttle, 0.0f, 1.0f);
 
-    // We do NOT call g2.motors.set_throttle() here to avoid coupling
-    // AR_FoilControl directly to Rover internals.  The mode's update() reads
-    // this value via get_throttle_cmd() and applies it to g2.motors, which
-    // keeps set_servos() as the single PWM writer.
     _v_pid.set_target_rate(_speed_target_ms);
     _v_pid.set_actual_rate(v_meas);
     _throttle_cmd = throttle;
 }
 
+// -----------------------------------------------------------------------------
+// Failsafe state machine (10 Hz) — PR6 §5: arm the saturation triggers only
+// when foilborne + settled, then run the dwell-time latches.
+//
+// Two saturation triggers are armed by this gate (both per §5.5 of the
+// design spec):
+//   (a) Continuous-saturation: pitch_mix_cmd has been clipped for > 0.5 s
+//       continuously. Driven by _pitch_saturated (the dwell-based flag set
+//       inside update_inner()).
+//   (b) Duty-cycle saturation: |u_sat - u_unsat| > 0.05·u_range averaged over
+//       a 5 s window with duty > 10 %. STUBBED IN PR6 — the actual duty
+//       counter + windowed average is a TODO(PR7); only the arming gate is
+//       wired here so PR7 can hang the counter off it.
+//
+// Both triggers' action (latch into AUTO_DESCEND) is also TODO(PR7) — the
+// state machine that owns the mode-switch lives outside this class. PR6
+// only sets the conditions for the latch and logs the trigger.
+// -----------------------------------------------------------------------------
 void AR_FoilControl::update_failsafe()
 {
-    // PR6.
-    return;
+    const uint32_t now_us = AP_HAL::micros();
+    float dt;
+    if (_last_failsafe_us == 0) {
+        dt = 0.1f;  // 10 Hz nominal
+    } else {
+        dt = (now_us - _last_failsafe_us) * 1.0e-6f;
+        dt = constrain_float(dt, 0.01f, 0.5f);
+    }
+    _last_failsafe_us = now_us;
+
+    // Auto-detect mode change as a fallback for callers that didn't invoke
+    // notify_mode_change() on _enter(). Cheap — reads the singleton ptr's
+    // cached mode_number().
+#if HAL_LOGGING_ENABLED
+    // (no-op — left as a comment hook; we just track t_since_mode_change_s.)
+#endif
+    _t_since_mode_change_s += dt;
+
+    // --- Arm the saturation trigger ---------------------------------------
+    const float V = AP::ahrs().groundspeed();
+    const bool foilborne_and_above_vto = _foilborne_now && (V > (_vto.get() + 0.2f));
+    const bool engaged                  = _engage_factor > 0.9f;
+    const bool settled                  = _t_since_mode_change_s > AR_FOILCONTROL_MODE_SETTLE_S;
+    _sat_trigger_armed = foilborne_and_above_vto && engaged && settled;
+
+    // --- (a) Continuous-saturation dwell ----------------------------------
+    if (_sat_trigger_armed && _pitch_saturated) {
+        _continuous_sat_s += dt;
+        if (_continuous_sat_s > AR_FOILCONTROL_CONT_SAT_LATCH_S) {
+            // TODO(PR7): latch into AUTO_DESCEND. Cross-class hook lives in the
+            // mode-switch path — this class only signals the condition.
+            // For now, the AP_Logger trace from update_outer's "FOI2" message
+            // (SatA=1 + ongoing clip) is the only artefact.
+        }
+    } else {
+        _continuous_sat_s = 0.0f;
+    }
+
+    // --- (b) 5-s duty-cycle counter --------------------------------------
+    // TODO(PR7): implement the duty-cycle windowed counter. The gate above
+    // is the only piece of PR6 wiring; the counter itself is deferred so
+    // PR6's commit stays focused on the structural changes.
+    if (_sat_trigger_armed) {
+        // PR7 will hang the counter here, gated on _sat_trigger_armed.
+    }
 }
 
 void AR_FoilControl::output_to_servos()

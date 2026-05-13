@@ -4,6 +4,7 @@
 #include <AP_Param/AP_Param.h>
 #include <AP_RangeFinder/AP_RangeFinder.h>
 #include <AC_PID/AC_PID.h>
+#include <AC_PID/AC_P.h>
 
 /*
   AR_FoilControl — foilboat cascaded controller (rover sibling to AR_AttitudeControl).
@@ -20,10 +21,34 @@
       pitch_mix_cmd clamped to ±0.436 rad (±25°), per §5.4.
     - Throttle output routed through SRV_Channels::k_throttle via the
       Rover motors path (g2.motors.set_throttle).
-  Deferred to PR6: failsafe state machine, persistent-saturation latch to
-  AUTO_DESCEND (§5.5), lift-trim integrator (§2.2), HULL_BORNE pre-foilborne
-  trim (§4 — taking the "simpler alternative": HULL_BORNE keeps PR4 routing
-  via is_foilborne_mode()==false, so the v0 cascade is bypassed in HULL_BORNE).
+
+  PR6 scope (this commit): three coordinated changes that fall out of the
+  three expert reviews of PR5's SITL smoke-test failure (1.6 s to ±25° clamp):
+    - AC_PID idiom refactor (codebase expert):
+      * Drop the manual `-Kd_theta·q` workaround. AC_PID's D-on-error path
+        is the canonical idiom; we fold Kd_θ into Kd_q on the inner pitch-rate
+        PID so a single AC_PID owns the pitch derivative term.
+      * Yaw outer wrapper switches from AC_PID to AC_P (Ki_ψ=Kd_ψ=0 per spec).
+      * Pitch outer stays AC_PID so the §2.2 lift-trim integrator (Ki_θ=0.5)
+        survives. Roll stays AC_PID (Kd_φ=0.04 is on dφ/dt — what AC_PID does).
+    - Control-law refinements (flight-controls expert):
+      * Canard pre-load: linear → quadratic in V/V_TO, peak +4° (was +6°)
+        so canard α at V_TO is 10° (was 12°), keeping a 2° margin to α_stall.
+      * Main pre-load: linear, peak +2°. Both bypass the pitch integrator
+        and ramp down via (1 - engage_factor) once foilborne.
+      * V² scheduling: piecewise — frozen (Vc/Vto)² below V_TO, V² in-band,
+        0.25 floor above V_cruise. Replaces the 4× hard cap.
+      * Canard lead compensator H(s) = (1+0.060s)/(1+0.015s) downstream of
+        the mixer to restore PM ~35° at ω≈30 rad/s (servo τ=55 ms eats ~58°).
+    - Failsafe gating (also controls expert):
+      * Saturation triggers (5-s duty + 0.5-s continuous) armed only when
+        foilborne + settled (V > V_TO+0.2, engage > 0.9, t_since_mode > 2 s).
+      * AUTO_DESCEND actual mode-switch wiring deferred to PR7.
+
+  Deferred to PR7: failsafe state-machine *action* (the latch into
+  AUTO_DESCEND is logged as a TODO here), FOIL LogStructure extension
+  for Preld/SchS/SatA (currently only WriteStreaming with the PR5 set of
+  fields, which doesn't need a static LogStructure entry).
 */
 class AR_FoilControl {
 public:
@@ -63,6 +88,12 @@ public:
     void set_pitch_target_rad(float th)      { _pitch_target_override_rad = th; _pitch_target_override = true; }
     void clear_pitch_target_override()       { _pitch_target_override = false; }
 
+    // Notify the failsafe gate of a mode change.  Optional — the controller
+    // also auto-detects mode changes via the singleton control-mode pointer
+    // if the caller doesn't invoke this, but explicit calls let modes signal
+    // the transition exactly on their _enter() boundary.
+    void notify_mode_change()                { _continuous_sat_s = 0.0f; _t_since_mode_change_s = 0.0f; }
+
     // Returns height above water in metres, or NaN if rangefinder is unhealthy / dropped.
     // Reads from the downward-facing instance configured via RNGFND1_ORIENT = PITCH_270.
     float get_height_above_water() const;
@@ -94,15 +125,18 @@ private:
 
     // --- outer attitude/speed PIDs (PR5) ----------------------------------
     // Roll attitude (phi_cmd -> p_setpoint), Kp=0.6 / Ki=0.05 / Kd=0.04 per §1.2.
+    // Kd_φ is on dφ/dt, which is exactly what AC_PID's D-on-error path computes.
     AC_PID _phi_pid;
     // Forward speed (V_cmd -> throttle), Kp=0.35 / Ki=0.10 / Kd=0.0 per §1.5.
     AC_PID _v_pid;
-    // Pitch attitude (theta_cmd -> q_setpoint), Kp=4.0 / Ki=0.5 / Kd=0.19 per §1.1.
-    // Kd is on q (body rate), not on dθ/dt: AC_PID's D path is disabled (Kd=0
-    // in the controller) and we add a manual `-Kd_theta * q` term outside.
+    // Pitch attitude (theta_cmd -> q_setpoint), Kp=4.0 / Ki=0.5 / Kd=0 per §1.1
+    // (PR6: Kd_θ folded into Kd_q on the inner pitch-rate PID — see _q_rate_pid).
+    // Retained as AC_PID (not AC_P) to preserve the §2.2 lift-trim integrator.
     AC_PID _theta_pid;
-    // Heading PID (psi_cmd -> r_setpoint), Kp=1.0 / Ki=0 / Kd=0 first-cut.
-    AC_PID _psi_pid;
+    // Heading P controller (psi_cmd -> r_setpoint), Kp=1.0 per §1.3 first-cut.
+    // PR6: switched from AC_PID to AC_P — spec has Ki_ψ=0, Kd_ψ=0 so AC_P is
+    // the canonical wrapper (matches AR_AttitudeControl::_steer_angle_p).
+    AC_P   _psi_p;
 
     // --- height outer loop (manual PID — keeps the legacy AP_Float gains) -
     // Preserves FOIL_HGT_P / FOIL_HGT_I / FOIL_HGT_D parameter names from PR1
@@ -119,7 +153,13 @@ private:
     AP_Float _h_foilborne_thresh;   // FOIL_HGT_FB  - height threshold for foilborne mode (m)
     AP_Float _vcruise;              // FOIL_VCRUISE  - V_cruise for V^2 scheduling (m/s)
     AP_Float _vmin_sched;           // FOIL_VMINSCHD - lower clamp on V before V^2 explodes (m/s)
-    AP_Float _kd_theta;             // FOIL_KD_THETA - pitch attitude D on q (Kd manual term)
+    AP_Float _vto;                  // FOIL_VTO      - take-off reference speed for pre-load schedule (m/s)
+    AP_Float _pre_can;              // FOIL_PRE_CAN  - canard pre-load peak at V=V_TO (rad)
+    AP_Float _pre_main;             // FOIL_PRE_MAIN - main pre-load peak at V=V_TO (rad)
+    AP_Float _sched_floor;          // FOIL_SCHED_FL - lower bound on V² gain scale (above V_cruise)
+    AP_Float _lead_tau_lead;        // FOIL_LEAD_LD  - canard lead compensator zero (s)
+    AP_Float _lead_tau_lag;         // FOIL_LEAD_LG  - canard lead compensator pole (s)
+    AP_Int8  _lead_en;              // FOIL_LEAD_EN  - bypass switch for the lead compensator (0/1)
 
     // --- volatile setpoints (not persisted) -------------------------------
     float _height_target_m;
@@ -142,13 +182,17 @@ private:
 
     // --- V^2 scheduling captured nominal gains ----------------------------
     // Captured in init() so we can rescale each tick without losing the
-    // user-set EEPROM values.
+    // user-set EEPROM values.  Yaw is AC_P so only kP is captured.
     float _nom_p_rate_kp, _nom_p_rate_ki, _nom_p_rate_kd;
     float _nom_q_rate_kp, _nom_q_rate_ki, _nom_q_rate_kd;
     float _nom_r_rate_kp, _nom_r_rate_ki, _nom_r_rate_kd;
     float _nom_phi_kp,    _nom_phi_ki,    _nom_phi_kd;
     float _nom_theta_kp,  _nom_theta_ki,  _nom_theta_kd;
+    float _nom_psi_kp;
     bool  _nominal_gains_captured;
+
+    // --- last gain scale (for logging) ------------------------------------
+    float _last_gain_scale;
 
     // --- cascade-level pitch-saturation tracking (§5.3) -------------------
     float    _pitch_sat_dwell_s;      // time mixer pitch_mix_cmd has been clipped
@@ -167,10 +211,31 @@ private:
     // Cosine-ramp gain in [0,1], updated each outer tick.
     float _engage_factor;
 
+    // --- pre-load feed-forward (PR6, §4) ----------------------------------
+    // Last pre-load applied to the canard (rad). Stashed for logging.
+    float _canard_preload_last;
+
+    // --- canard lead compensator state (PR6) ------------------------------
+    // Discrete-time Tustin state for H(s) = (1 + tau_lead*s) / (1 + tau_lag*s)
+    // applied to the canard command downstream of the mixer.
+    float _lead_x_prev;
+    float _lead_y_prev;
+
+    // --- failsafe gating (PR6, Part 5) ------------------------------------
+    // armed when foilborne + settled (V > V_TO + 0.2, engage > 0.9,
+    // t_since_mode_change > 2 s). Gates BOTH the 5-s-duty counter (TODO PR7)
+    // and the continuous-saturation dwell.
+    bool  _sat_trigger_armed;
+    float _continuous_sat_s;          // dwell time for continuous-saturation latch
+    float _t_since_mode_change_s;     // ramps up each failsafe tick, reset on mode change
+    uint8_t _last_mode_num_seen;      // for auto-detect of mode changes if Mode forgot to notify
+
     // --- dt bookkeeping per loop ------------------------------------------
     uint32_t _last_inner_us;
     uint32_t _last_outer_us;
     uint32_t _last_throttle_us;
+    uint32_t _last_failsafe_us;
+    float    _last_inner_dt;          // for the lead compensator at 400 Hz
 
     // init() bookkeeping
     bool _servo_ranges_set;
@@ -178,6 +243,14 @@ private:
     // --- helpers ----------------------------------------------------------
     // Apply V^2 scheduling: multiply nominal gains by clamp((Vc/max(V,Vmin))^2).
     void apply_vsq_scheduling();
+    // Piecewise V² gain scale: frozen below V_TO, V² in-band, FOIL_SCHED_FL floor.
+    float gain_scale(float V) const;
+    // Canard / main pre-load schedules (rad). V is forward speed (m/s).
+    float canard_preload_rad(float V) const;
+    float main_preload_rad(float V) const;
+    // First-order lead compensator on the canard command (discrete-time Tustin).
+    // Returns y[n] given x[n] and updates the internal state.
+    float canard_lead(float x);
     // Capture nominal gains from each PID's current kP/kI/kD (one-shot).
     void capture_nominal_gains();
 };
