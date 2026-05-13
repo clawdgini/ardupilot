@@ -25,3 +25,48 @@ RNGFND1_TYPE 100
 # RNGFND1_ORIENT=25 (ROTATION_PITCH_270) marks the instance as downward-facing
 # so AR_FoilControl::get_height_above_water() can look it up via orientation.
 RNGFND1_ORIENT 25
+
+# PR5: cascaded outer loops + attitude wrappers + V^2 scheduling.
+# Gain values lifted from research/flight-dev-rig/04-control-law.md §1.
+# Mirror them here so a clean SITL boot reads the spec defaults without
+# trusting the in-code AP_GROUPINFO defaults (those can drift on rebase).
+
+# --- Pitch attitude wrapper (§1.1) — theta_cmd -> q_setpoint ---
+FOIL_PIT_P    4.0
+FOIL_PIT_I    0.5
+FOIL_PIT_D    0.0
+FOIL_PIT_IMAX 2.0
+# Manual D-on-q term (subtracted outside the PID per spec).
+FOIL_KD_THETA 0.19
+
+# --- Roll attitude wrapper (§1.2) — phi_cmd -> p_setpoint ---
+FOIL_ROL_P    0.6
+FOIL_ROL_I    0.05
+FOIL_ROL_D    0.04
+FOIL_ROL_IMAX 0.5
+
+# --- Heading PID (§1.3 note) — psi_cmd -> r_setpoint ---
+FOIL_YAW_P    1.0
+FOIL_YAW_I    0.0
+FOIL_YAW_D    0.0
+FOIL_YAW_IMAX 1.0
+
+# --- Height outer (§1.4) — h_cmd -> theta_cmd ---
+FOIL_HGT_P    0.35
+FOIL_HGT_I    0.08
+FOIL_HGT_D    0.20
+
+# --- Speed outer (§1.5) — V_cmd -> throttle [0..1] ---
+FOIL_SPD_P    0.35
+FOIL_SPD_I    0.10
+FOIL_SPD_D    0.00
+FOIL_SPD_IMAX 1.0
+
+# --- V^2 gain scheduling (§1.1) ---
+FOIL_VCRUISE  3.7
+FOIL_VMINSCHD 0.5
+
+# --- Scalar thresholds ---
+FOIL_HGT_TGT  0.15
+FOIL_VTOFF    1.6
+FOIL_HGT_FB   0.06

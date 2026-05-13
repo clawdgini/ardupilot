@@ -1,9 +1,13 @@
 #include "Rover.h"
 
 // HULL_BORNE: displacement-mode taxi.
-// PR3 scaffolding: set targets on AR_FoilControl; surfaces still go through
-// the usual Rover::set_servos() passthrough path because is_foilborne_mode()
-// returns false for this mode. PR4+ will add the foilborne servo branch.
+// PR5: taking the "simpler alternative" path from the PR5 brief — HULL_BORNE
+// keeps is_foilborne_mode() == false, so the AR_FoilControl cascade is gated
+// out and surfaces still passthrough via the normal Rover steering/servo path
+// (no controller-driven canard pre-load on the v0 rig). The §4 pre-foilborne
+// trim schedule (canard 0°→+6°, main 0°→+2° linear in V/V_TO) is deferred to
+// PR6 as a feedforward injection in AR_FoilControl::output_to_servos().
+// TODO(PR6): wire §4 trim schedule + add foilborne-up transition detection.
 
 bool ModeHullBorne::_enter()
 {
@@ -15,7 +19,8 @@ bool ModeHullBorne::_enter()
 
 void ModeHullBorne::update()
 {
-    // PR3: targets only — actual servo writes still passthrough.
+    // PR5: still passthrough — set targets so a manual mode switch into a
+    // foilborne mode picks up sane defaults, but don't drive any servos here.
     rover.g2.foil_control.set_speed_target(0.0f);
     rover.g2.foil_control.set_heading_target_rad(AP::ahrs().get_yaw_rad());
     // No height target — boat is hull-borne.
