@@ -219,6 +219,9 @@ public:
         k_actuator4             = 187,
         k_actuator5             = 188,
         k_actuator6             = 189,
+        k_foilcontrol_canard    = 190,   // foilboat: canard flap angle, normalised ±1 (PR4 wires output)
+        k_foilcontrol_main      = 191,   // foilboat: main hydrofoil flap, normalised ±1 (PR4 wires output)
+        k_foilcontrol_rudder    = 192,   // foilboat: rudder, normalised ±1 (PR4 wires output)
         k_nr_aux_servo_functions         ///< This must be the last enum value (only add new values _before_ this one)
     } Function;
 

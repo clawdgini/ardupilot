@@ -2,6 +2,7 @@
 
 #include <AP_Common/AP_Common.h>
 
+#include <APM_Control/AR_FoilControl.h>
 #include "RC_Channel_Rover.h"
 #include <AC_Avoidance/AC_Avoid.h>
 #include "AC_Sprayer/AC_Sprayer.h"
@@ -306,6 +307,9 @@ public:
 
     // steering and throttle controller
     AR_AttitudeControl attitude_control;
+
+    // foilboat cascaded controller (PR1 skeleton — see AR_FoilControl.{h,cpp})
+    AR_FoilControl foil_control;
 
     // turn radius of vehicle (only used in steering mode)
     AP_Float turn_radius;

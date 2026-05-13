@@ -77,7 +77,10 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
     SCHED_TASK_CLASS(AP_OpticalFlow,      &rover.optflow,          update,         200, 160,  11),
 #endif
     SCHED_TASK(update_current_mode,   400,    200,  12),
+    SCHED_TASK_CLASS(AR_FoilControl,      &rover.g2.foil_control,  update_inner,   400,  250,  13),
+    SCHED_TASK_CLASS(AR_FoilControl,      &rover.g2.foil_control,  update_outer,   100,  200,  14),
     SCHED_TASK(set_servos,            400,    200,  15),
+    SCHED_TASK_CLASS(AR_FoilControl,      &rover.g2.foil_control,  update_throttle, 50,  100,  16),
     SCHED_TASK_CLASS(AP_GPS,              &rover.gps,              update,         50,  300,  18),
     SCHED_TASK_CLASS(AP_Baro,             &rover.barometer,        update,         10,  200,  21),
 #if AP_BEACON_ENABLED
@@ -111,6 +114,7 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
     SCHED_TASK_CLASS(AP_Camera,           &rover.camera,           update,         50,  200,  78),
 #endif
     SCHED_TASK(gcs_failsafe_check,     10,    200,  81),
+    SCHED_TASK_CLASS(AR_FoilControl,      &rover.g2.foil_control,  update_failsafe, 10,  100,  82),
 #if AP_FENCE_ENABLED
     SCHED_TASK(fence_check,            10,    200,  84),
 #endif

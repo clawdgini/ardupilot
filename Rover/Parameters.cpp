@@ -634,6 +634,10 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // @Path: mode_circle.cpp
     AP_SUBGROUPINFO(mode_circle, "CIRC", 57, ParametersG2, ModeCircle),
 
+    // @Group: FOIL_
+    // @Path: ../libraries/APM_Control/AR_FoilControl.cpp
+    AP_SUBGROUPINFO(foil_control, "FOIL_", 58, ParametersG2, AR_FoilControl),
+
     AP_GROUPEND
 };
 
@@ -678,6 +682,7 @@ ParametersG2::ParametersG2(void)
     wheel_rate_control(wheel_encoder),
     motors(wheel_rate_control),
     attitude_control(),
+    foil_control(),
     smart_rtl(),
 #if HAL_PROXIMITY_ENABLED
     proximity(),
