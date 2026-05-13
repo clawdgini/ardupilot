@@ -28,6 +28,9 @@ public:
         SMART_RTL    = 12,
         GUIDED       = 15,
         INITIALISING = 16,
+        HULL_BORNE     = 20,   // displacement-mode taxi; controller passthrough + roll/yaw damping
+        FOILBORNE_HOLD = 21,   // hold ride height, heading, speed
+        AUTO_DESCEND   = 22,   // monotone-down ride-height schedule -> HULL_BORNE on touch
         // Mode number 30 reserved for "offboard" for external/lua control.
     };
 
@@ -79,6 +82,9 @@ public:
     virtual bool allows_arming() const { return true; }
 
     bool allows_stick_mixing() const { return is_autopilot_mode(); }
+
+    // returns true if this mode runs the AR_FoilControl surfaces (foiler-only modes)
+    virtual bool is_foilborne_mode() const { return false; }
 
     //
     // attributes for mavlink system status reporting
@@ -956,3 +962,79 @@ protected:
     bool _loitering = false; // true if we are loitering after mission completion
 };
 #endif
+
+// ---------------------------------------------------------------------------
+// Foilboat (AR_FoilControl) modes — PR3 scaffolding.
+// HULL_BORNE: displacement-mode taxi; foil surfaces still passthrough.
+// FOILBORNE_HOLD: hold ride height, heading, and speed via AR_FoilControl.
+// AUTO_DESCEND: monotone descend to hull-borne (PR6 implements the ramp).
+// ---------------------------------------------------------------------------
+
+class ModeHullBorne : public Mode
+{
+public:
+
+    Number mode_number() const override { return Number::HULL_BORNE; }
+    const char *name() const override { return "Hull Borne"; }
+    const char *name4() const override { return "HULL"; }
+
+    // methods that affect movement of the vehicle in this mode
+    void update() override;
+
+    // hull-borne taxi does not require GPS position/velocity estimate
+    bool requires_position() const override { return false; }
+    bool requires_velocity() const override { return false; }
+
+    // HULL_BORNE is NOT a foilborne mode — surfaces still passthrough.
+    bool is_foilborne_mode() const override { return false; }
+
+protected:
+
+    bool _enter() override;
+};
+
+class ModeFoilborneHold : public Mode
+{
+public:
+
+    Number mode_number() const override { return Number::FOILBORNE_HOLD; }
+    const char *name() const override { return "Foilborne Hold"; }
+    const char *name4() const override { return "FBHD"; }
+
+    // methods that affect movement of the vehicle in this mode
+    void update() override;
+
+    // foilborne hold uses AR_FoilControl rangefinder + IMU; GPS not required
+    bool requires_position() const override { return false; }
+    bool requires_velocity() const override { return false; }
+
+    // FOILBORNE_HOLD activates AR_FoilControl surface routing.
+    bool is_foilborne_mode() const override { return true; }
+
+protected:
+
+    bool _enter() override;
+};
+
+class ModeAutoDescend : public Mode
+{
+public:
+
+    Number mode_number() const override { return Number::AUTO_DESCEND; }
+    const char *name() const override { return "Auto Descend"; }
+    const char *name4() const override { return "AUTD"; }
+
+    // methods that affect movement of the vehicle in this mode
+    void update() override;
+
+    // descend uses AR_FoilControl rangefinder + IMU; GPS not required
+    bool requires_position() const override { return false; }
+    bool requires_velocity() const override { return false; }
+
+    // AUTO_DESCEND keeps controller active while ramping height down.
+    bool is_foilborne_mode() const override { return true; }
+
+protected:
+
+    bool _enter() override;
+};

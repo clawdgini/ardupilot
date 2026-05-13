@@ -562,6 +562,15 @@ Mode *Rover::mode_from_mode_num(const enum Mode::Number num)
         ret = (Mode *)g2.mode_dock_ptr;
         break;
 #endif
+    case Mode::Number::HULL_BORNE:
+        ret = &mode_hull_borne;
+        break;
+    case Mode::Number::FOILBORNE_HOLD:
+        ret = &mode_foilborne_hold;
+        break;
+    case Mode::Number::AUTO_DESCEND:
+        ret = &mode_auto_descend;
+        break;
     default:
         break;
     }

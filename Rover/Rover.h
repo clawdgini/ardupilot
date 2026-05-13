@@ -106,6 +106,9 @@ public:
 #if MODE_DOCK_ENABLED
     friend class ModeDock;
 #endif
+    friend class ModeHullBorne;
+    friend class ModeFoilborneHold;
+    friend class ModeAutoDescend;
 
     friend class RC_Channel_Rover;
     friend class RC_Channels_Rover;
@@ -248,6 +251,9 @@ private:
 #if MODE_DOCK_ENABLED
     ModeDock mode_dock;
 #endif
+    ModeHullBorne     mode_hull_borne;
+    ModeFoilborneHold mode_foilborne_hold;
+    ModeAutoDescend   mode_auto_descend;
 
     // cruise throttle and speed learning
     typedef struct {
