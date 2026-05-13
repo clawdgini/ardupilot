@@ -204,6 +204,9 @@ static const struct {
 #endif  // AP_SIM_WEBOTS_ENABLED
 #if AP_SIM_JSON_ENABLED
     { "JSON",               JSON::create },
+    // foilboat: W2 stub alias — same JSON UDP plant on 127.0.0.1,
+    // but selectable via `sim_vehicle.py -v Rover -f foilboat`.
+    { "foilboat",           JSON::create },
 #endif  // AP_SIM_JSON_ENABLED
     { "blimp",              Blimp::create },
     { "novehicle",          NoVehicle::create },

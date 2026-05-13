@@ -550,6 +550,13 @@
                     "default_params/rover-skid.parm"
                 ]
             },
+            "foilboat": {
+                "waf_target": "bin/ardurover",
+                "default_params_filename": [
+                    "default_params/rover.parm",
+                    "default_params/foilboat.parm"
+                ]
+            },
             "sailboat": {
                 "waf_target": "bin/ardurover",
                 "default_params_filename": [

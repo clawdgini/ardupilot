@@ -1,0 +1,17 @@
+# foilboat W2 stub defaults
+# 1 m RC flight-dev rig; minimal stub on top of rover.parm.
+# Throttle on ch3, ground-steering/rudder on ch1 (inherited).
+# Three extra surfaces wired as RC passthrough so the rig can be
+# driven open-loop from the transmitter until AP_FoilControl lands.
+#  SERVO5 = canard flap   (rcin5)
+#  SERVO6 = main flap     (rcin6)
+#  SERVO7 = rudder trim   (rcin7)
+SERVO5_FUNCTION 55
+SERVO5_MIN 1000
+SERVO5_MAX 2000
+SERVO6_FUNCTION 56
+SERVO6_MIN 1000
+SERVO6_MAX 2000
+SERVO7_FUNCTION 57
+SERVO7_MIN 1000
+SERVO7_MAX 2000
