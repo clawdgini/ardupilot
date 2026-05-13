@@ -145,6 +145,10 @@ void Rover::init_ardupilot()
 
     rover.g2.sailboat.init();
 
+    // Foilboat PR4: configure the three foil-surface SRV_Channel angle ranges
+    // (±2500 centideg = ±25° mechanical) so output_to_servos() can write them.
+    rover.g2.foil_control.init();
+
     // boat should loiter after completing a mission to avoid drifting off
     if (is_boat()) {
         rover.g2.mis_done_behave.set_default(uint8_t(ModeAuto::DoneBehaviour::LOITER));
