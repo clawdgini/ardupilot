@@ -362,7 +362,7 @@ const AP_Param::GroupInfo AR_FoilControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("LEAD_EN",    23, AR_FoilControl, _lead_en, AR_FOILCONTROL_LEAD_EN),
 
-    // @Param: SAT_DUTY_THR
+    // @Param: SAT_DUTY
     // @DisplayName: Saturation duty-cycle trigger threshold
     // @Description: Fraction of inner-loop ticks (0..1) over a 5 s window in
     // which any flap surface is within ~0.5 deg of its mechanical limit. When
@@ -372,7 +372,13 @@ const AP_Param::GroupInfo AR_FoilControl::var_info[] = {
     // @Range: 0.0 1.0
     // @Increment: 0.05
     // @User: Advanced
-    AP_GROUPINFO("SAT_DUTY_THR", 24, AR_FoilControl, _sat_duty_thr, AR_FOILCONTROL_SAT_DUTY_THR),
+    // PR7b: shortened from SAT_DUTY_THR to SAT_DUTY — FOIL_SAT_DUTY_THR was
+    // 17 chars total, exceeding the AP_Param 16-char name limit, panicking
+    // ardurover at boot with "Bad parameter table" (ENABLE_DEBUG=1 message:
+    // "suffix is too long in SAT_DUTY_THR (17 > 16)").  Renaming the suffix
+    // avoids the boot panic; the AP_GROUPINFO slot index (24) is preserved
+    // so any stored param value migrates cleanly across the rename.
+    AP_GROUPINFO("SAT_DUTY", 24, AR_FoilControl, _sat_duty_thr, AR_FOILCONTROL_SAT_DUTY_THR),
 
     // @Param: FAIL_DWELL
     // @DisplayName: Failsafe AUTO_DESCEND dwell

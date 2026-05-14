@@ -103,7 +103,11 @@ FOIL_LEAD_EN  1
 # flap is within 0.5 deg of its ±25 deg mechanical limit.  Above this
 # threshold (and under the armed gate: foilborne + settled + V > VTO + 0.2),
 # the duty trigger fires.  0.40 = 40 % of the 2000-sample window.
-FOIL_SAT_DUTY_THR 0.40
+# PR7b: param renamed FOIL_SAT_DUTY_THR -> FOIL_SAT_DUTY (the 17-char form
+# exceeded the AP_Param 16-char name limit and panicked the autopilot at
+# boot).  Index in AR_FoilControl::var_info[] unchanged at slot 24, so any
+# stored param value migrates by index.
+FOIL_SAT_DUTY 0.40
 
 # --- Failsafe AUTO_DESCEND dwell (PR7a-D1) ---
 # Time (ms) the duty trigger must hold continuously under the armed gate
