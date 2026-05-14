@@ -1015,6 +1015,14 @@ public:
 
     static const struct AP_Param::GroupInfo var_info[];
 
+    // PR8: §3.1 entry-transition sub-state.  Exposed for log/inspection.
+    enum class EntryPhase : uint8_t {
+        GATE = 0,  // waiting for V_gps / h_lidar / dh/dt gate to hold
+        RAMP = 1,  // ramping h_cmd from h0 (at gate-pass) → FBHD_H_REF
+        HOLD = 2,  // steady — h_cmd = FBHD_H_REF, normal FBHD operation
+    };
+    EntryPhase get_entry_phase() const { return _entry_phase; }
+
 protected:
 
     bool _enter() override;
@@ -1026,6 +1034,41 @@ protected:
     // see no behavior change.
     AP_Float _h_ref_m;          // FBHD_H_REF: ride-height setpoint (m)
     AP_Float _th_override_rad;  // FBHD_TH_OV: pitch override (rad); 0 = no override
+
+    // PR8: §3.1 entry-transition params.  Defaults match the spec §3.1
+    // text (V_gps > V_TO+0.15 = 1.75; h_lidar > 0.04; dh/dt > 0.15;
+    // gate-hold 0.8 s; ramp rate 0.30 m/s — derived from "ramp to 0.15 m
+    // at 0.30 m/s"; gate-timeout 5 s before reverting to AUTO_DESCEND so
+    // a stalled gate doesn't strand the boat at half-throttle).
+    AP_Float _v_gate_ms;         // FBHD_V_GATE   - V_gps gate (m/s)
+    AP_Float _h_gate_m;          // FBHD_H_GATE   - h_lidar gate (m)
+    AP_Float _dhdt_gate_ms;      // FBHD_DHDT_GT  - dh/dt gate (m/s)
+    AP_Int32 _gate_hold_ms;      // FBHD_GATE_HLD - gate must hold this long (ms)
+    AP_Int32 _gate_tmo_ms;       // FBHD_GATE_TMO - timeout before AUTO_DESCEND (ms)
+    AP_Float _ramp_rate_ms;      // FBHD_RAMP_R   - h_cmd ramp rate (m/s)
+
+private:
+
+    // §3.1 sub-state machine.
+    EntryPhase _entry_phase;
+
+    // Timestamps (ms since boot) for the entry transition.
+    uint32_t _entry_t_ms;            // _enter() time — used for GATE timeout
+    uint32_t _gate_hold_start_ms;    // first tick gate conditions were all met (0 if not currently meeting)
+    uint32_t _ramp_start_ms;         // time at gate-pass / ramp start
+    float    _ramp_h0_m;             // h_lidar captured at gate-pass — ramp starts here
+    float    _ramp_h_target_m;       // FBHD_H_REF captured at ramp start
+
+    // dh/dt low-pass state — simple 1st-order on the finite-diff of get_height_above_water().
+    float    _h_last_m;              // last finite h reading; NAN if none yet
+    uint32_t _h_last_us;             // micros() of _h_last_m
+    float    _dhdt_filt_ms;          // filtered dh/dt (m/s)
+
+    // Helpers (defined in mode_foilborne_hold.cpp).
+    bool gate_conditions_met(float v_gps_ms, float h_m, float dhdt_ms,
+                             float theta_rad, float phi_rad) const;
+    void update_dhdt(float h_m);
+    void reset_entry_state();
 };
 
 class ModeAutoDescend : public Mode
