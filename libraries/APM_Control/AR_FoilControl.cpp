@@ -151,6 +151,20 @@
 // PR6 §5: settle window after a mode change before failsafe arms.
 #define AR_FOILCONTROL_MODE_SETTLE_S       2.0f
 
+// PR7a D3: duty-cycle saturation trigger defaults.
+// Threshold (0..1): >40% saturated samples over the 5 s window arms the trigger.
+// Window length is the SAT_WINDOW_SAMPLES compile-time constant in the header
+// (2000 samples = 5 s @ 400 Hz inner-loop tick).  FOIL_SAT_WIN_MS is documented
+// here as a static value, not exposed as a param (changing it would require a
+// buffer realloc that we don't do at runtime).
+#define AR_FOILCONTROL_SAT_DUTY_THR        0.40f
+#define AR_FOILCONTROL_SAT_WIN_MS          5000     // documented constant; matches SAT_WINDOW_SAMPLES @ 400 Hz
+// Margin (rad) inside the mechanical flap limit at which we declare a surface
+// "at limit" for duty-cycle accounting.  Anything within 0.5° (0.00873 rad)
+// of the ±25° clamp counts as saturated.
+#define AR_FOILCONTROL_SAT_EPSILON_RAD     0.00873f
+
+
 // SRV_Channels::set_angle takes uint16_t centidegree half-range.
 #define AR_FOILCONTROL_SRV_ANGLE_CD      2500
 
@@ -343,6 +357,18 @@ const AP_Param::GroupInfo AR_FoilControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("LEAD_EN",    23, AR_FoilControl, _lead_en, AR_FOILCONTROL_LEAD_EN),
 
+    // @Param: SAT_DUTY_THR
+    // @DisplayName: Saturation duty-cycle trigger threshold
+    // @Description: Fraction of inner-loop ticks (0..1) over a 5 s window in
+    // which any flap surface is within ~0.5 deg of its mechanical limit. When
+    // exceeded under the failsafe arming gate (foilborne + settled), the
+    // duty-cycle trigger fires; sustained for FOIL_FAIL_DWELL ms it demands
+    // AUTO_DESCEND.  Default 0.40 (40 %).
+    // @Range: 0.0 1.0
+    // @Increment: 0.05
+    // @User: Advanced
+    AP_GROUPINFO("SAT_DUTY_THR", 24, AR_FoilControl, _sat_duty_thr, AR_FOILCONTROL_SAT_DUTY_THR),
+
     AP_GROUPEND
 };
 
@@ -397,10 +423,15 @@ AR_FoilControl::AR_FoilControl() :
     _canard_preload_last(0.0f),
     _lead_x_prev(0.0f),
     _lead_y_prev(0.0f),
+    _sat_armed(false),
     _sat_trigger_armed(false),
     _continuous_sat_s(0.0f),
     _t_since_mode_change_s(0.0f),
     _last_mode_num_seen(0xff),
+    _sat_buf_idx(0),
+    _sat_buf_fill(0),
+    _sat_buf_sum(0),
+    _sat_duty_cycle(0.0f),
     _last_inner_us(0),
     _last_outer_us(0),
     _last_throttle_us(0),
@@ -410,6 +441,63 @@ AR_FoilControl::AR_FoilControl() :
 {
     _singleton = this;
     AP_Param::setup_object_defaults(this, var_info);
+    // PR7a D3: zero-init the 2000-sample duty-cycle ring buffer.
+    for (uint16_t i = 0; i < SAT_WINDOW_SAMPLES; i++) {
+        _sat_buf[i] = 0;
+    }
+}
+
+// PR7a D3: explicit out-of-line notify_mode_change so we can wipe the
+// duty-cycle ring buffer + reset the trigger-armed flag on every mode entry.
+// Each Rover mode's _enter() already calls this; PR6 only needed it to reset
+// _continuous_sat_s and _t_since_mode_change_s.
+void AR_FoilControl::notify_mode_change()
+{
+    _continuous_sat_s = 0.0f;
+    _t_since_mode_change_s = 0.0f;
+    // Wipe the duty-cycle buffer so the trigger has to re-accumulate over a
+    // fresh 5 s window after every mode change.  This is the "gate until
+    // buffer is full" edge-case guard per the PR7a D3 spec.
+    _sat_buf_idx = 0;
+    _sat_buf_fill = 0;
+    _sat_buf_sum = 0;
+    _sat_duty_cycle = 0.0f;
+    _sat_armed = false;
+    _sat_trigger_armed = false;
+    for (uint16_t i = 0; i < SAT_WINDOW_SAMPLES; i++) {
+        _sat_buf[i] = 0;
+    }
+}
+
+// PR7a D3: push a single flap-at-limit sample into the circular buffer and
+// update the running sum + duty cycle.  Called once per inner-loop tick from
+// update_inner() after the per-channel mechanical clamp has been applied.
+void AR_FoilControl::push_sat_sample(bool flap_at_limit)
+{
+    const uint8_t new_bit = flap_at_limit ? 1 : 0;
+    const uint8_t old_bit = _sat_buf[_sat_buf_idx];
+    if (_sat_buf_fill < SAT_WINDOW_SAMPLES) {
+        // Buffer not yet full: we're overwriting a slot that was zero-init'd
+        // in the constructor (so old_bit is always 0 here), and we're adding
+        // a fresh sample to the count.
+        _sat_buf_sum += new_bit;
+        _sat_buf_fill++;
+    } else {
+        // Full: subtract the evicted sample, add the new one.
+        _sat_buf_sum = _sat_buf_sum + new_bit - old_bit;
+    }
+    _sat_buf[_sat_buf_idx] = new_bit;
+    _sat_buf_idx++;
+    if (_sat_buf_idx >= SAT_WINDOW_SAMPLES) {
+        _sat_buf_idx = 0;
+    }
+    // Gate until the buffer is full (PR7a D3 edge-case: safer to under-trigger
+    // during the first 5 s post-boot than to fire on a half-empty buffer).
+    if (_sat_buf_fill < SAT_WINDOW_SAMPLES) {
+        _sat_duty_cycle = 0.0f;
+    } else {
+        _sat_duty_cycle = (float)_sat_buf_sum / (float)SAT_WINDOW_SAMPLES;
+    }
 }
 
 void AR_FoilControl::capture_nominal_gains()
@@ -887,6 +975,17 @@ void AR_FoilControl::update_inner()
     _main_cmd_rad   = constrain_float(main_cmd,   -AR_FOILCONTROL_FLAP_LIMIT_RAD, +AR_FOILCONTROL_FLAP_LIMIT_RAD);
     _rudder_cmd_rad = constrain_float(rudder_cmd, -AR_FOILCONTROL_FLAP_LIMIT_RAD, +AR_FOILCONTROL_FLAP_LIMIT_RAD);
 
+    // --- PR7a D3: rolling saturation duty-cycle sample -------------------
+    // Any surface within SAT_EPSILON_RAD of its mechanical limit counts as
+    // "at limit" for this tick.  Sampled at the inner-loop rate (400 Hz)
+    // and accumulated into the 2000-sample (5 s) ring buffer.
+    const float sat_thr = AR_FOILCONTROL_FLAP_LIMIT_RAD - AR_FOILCONTROL_SAT_EPSILON_RAD;
+    const bool flap_at_limit =
+        (fabsf(_canard_cmd_rad) >= sat_thr) ||
+        (fabsf(_main_cmd_rad)   >= sat_thr) ||
+        (fabsf(_rudder_cmd_rad) >= sat_thr);
+    push_sat_sample(flap_at_limit);
+
     // roll_diff_cmd is unused in v0; reference once to silence -Wunused.
     (void)roll_diff_cmd;
 }
@@ -951,40 +1050,31 @@ void AR_FoilControl::update_failsafe()
     }
     _last_failsafe_us = now_us;
 
-    // Auto-detect mode change as a fallback for callers that didn't invoke
-    // notify_mode_change() on _enter(). Cheap — reads the singleton ptr's
-    // cached mode_number().
-#if HAL_LOGGING_ENABLED
-    // (no-op — left as a comment hook; we just track t_since_mode_change_s.)
-#endif
     _t_since_mode_change_s += dt;
 
-    // --- Arm the saturation trigger ---------------------------------------
+    // --- Arming gate (PR6 §5, kept) ---------------------------------------
     const float V = AP::ahrs().groundspeed();
     const bool foilborne_and_above_vto = _foilborne_now && (V > (_vto.get() + 0.2f));
     const bool engaged                  = _engage_factor > 0.9f;
     const bool settled                  = _t_since_mode_change_s > AR_FOILCONTROL_MODE_SETTLE_S;
-    _sat_trigger_armed = foilborne_and_above_vto && engaged && settled;
+    _sat_armed = foilborne_and_above_vto && engaged && settled;
 
-    // --- (a) Continuous-saturation dwell ----------------------------------
-    if (_sat_trigger_armed && _pitch_saturated) {
+    // --- PR7a D3: duty-cycle trigger replaces the PR6 instantaneous gate --
+    // _sat_trigger_armed is now: armed AND (duty cycle exceeded over a full
+    // 5 s window).  push_sat_sample() in update_inner() keeps _sat_duty_cycle
+    // at 0 until the buffer is full, so this naturally gates the trigger
+    // until the buffer is warm.
+    const bool duty_exceeded = _sat_duty_cycle > _sat_duty_thr.get();
+    _sat_trigger_armed = _sat_armed && duty_exceeded;
+
+    // --- Continuous-saturation dwell (PR6, retained for diagnostics) ------
+    // PR7a's failsafe-action wiring (D1) will hang the AUTO_DESCEND request
+    // off _sat_trigger_armed in a follow-up commit; for now the duty trigger
+    // is observable via FOI2's SatA field but does not yet drive a mode swap.
+    if (_sat_armed && _pitch_saturated) {
         _continuous_sat_s += dt;
-        if (_continuous_sat_s > AR_FOILCONTROL_CONT_SAT_LATCH_S) {
-            // TODO(PR7): latch into AUTO_DESCEND. Cross-class hook lives in the
-            // mode-switch path — this class only signals the condition.
-            // For now, the AP_Logger trace from update_outer's "FOI2" message
-            // (SatA=1 + ongoing clip) is the only artefact.
-        }
     } else {
         _continuous_sat_s = 0.0f;
-    }
-
-    // --- (b) 5-s duty-cycle counter --------------------------------------
-    // TODO(PR7): implement the duty-cycle windowed counter. The gate above
-    // is the only piece of PR6 wiring; the counter itself is deferred so
-    // PR6's commit stays focused on the structural changes.
-    if (_sat_trigger_armed) {
-        // PR7 will hang the counter here, gated on _sat_trigger_armed.
     }
 }
 

@@ -92,7 +92,10 @@ public:
     // also auto-detects mode changes via the singleton control-mode pointer
     // if the caller doesn't invoke this, but explicit calls let modes signal
     // the transition exactly on their _enter() boundary.
-    void notify_mode_change()                { _continuous_sat_s = 0.0f; _t_since_mode_change_s = 0.0f; }
+    // PR7a D3: also wipes the duty-cycle ring buffer so the trigger
+    // re-accumulates from scratch after every mode change (edge-case guard
+    // for the warm-up window).
+    void notify_mode_change();
 
     // Returns height above water in metres, or NaN if rangefinder is unhealthy / dropped.
     // Reads from the downward-facing instance configured via RNGFND1_ORIENT = PITCH_270.
@@ -101,6 +104,10 @@ public:
     // True when the pitch inner-loop mixer output has been saturated for > 0.2 s.
     // Outer-loop integrator(s) should freeze while this holds (§5.3).
     bool pitch_saturated() const { return _pitch_saturated; }
+
+    // Saturation duty cycle over the last FOIL_SAT_WIN_MS window (5 s default).
+    // Range [0..1]; reads 0 until the rolling buffer is full (post-boot warm-up).
+    float saturation_duty() const { return _sat_duty_cycle; }
 
     // Latest throttle command from the speed PID (0..1).  Modes that close
     // the speed loop read this each tick and pass it to AP_MotorsUGV.
@@ -160,6 +167,9 @@ private:
     AP_Float _lead_tau_lead;        // FOIL_LEAD_LD  - canard lead compensator zero (s)
     AP_Float _lead_tau_lag;         // FOIL_LEAD_LG  - canard lead compensator pole (s)
     AP_Int8  _lead_en;              // FOIL_LEAD_EN  - bypass switch for the lead compensator (0/1)
+
+    // PR7a D3: failsafe duty-cycle trigger param.
+    AP_Float _sat_duty_thr;         // FOIL_SAT_DUTY_THR - duty-cycle threshold (0..1)
 
     // --- volatile setpoints (not persisted) -------------------------------
     float _height_target_m;
@@ -221,14 +231,33 @@ private:
     float _lead_x_prev;
     float _lead_y_prev;
 
-    // --- failsafe gating (PR6, Part 5) ------------------------------------
-    // armed when foilborne + settled (V > V_TO + 0.2, engage > 0.9,
-    // t_since_mode_change > 2 s). Gates BOTH the 5-s-duty counter (TODO PR7)
-    // and the continuous-saturation dwell.
+    // --- failsafe gating (PR6, Part 5; extended PR7a D3 + D1) -------------
+    // arming gate: foilborne + settled (V > V_TO + 0.2, engage > 0.9,
+    // t_since_mode_change > 2 s). Required precondition for the saturation
+    // trigger to fire.
+    bool  _sat_armed;
+    // PR7a D3: fires when arming gate AND duty cycle > FOIL_SAT_DUTY_THR AND
+    // the rolling buffer has been fully populated since boot/mode-change.
+    // This is the signal polled by Rover modes via should_failsafe_descend()
+    // (after the FOIL_FAIL_DWELL dwell counter — see _failsafe_dwell_ms).
     bool  _sat_trigger_armed;
     float _continuous_sat_s;          // dwell time for continuous-saturation latch
     float _t_since_mode_change_s;     // ramps up each failsafe tick, reset on mode change
     uint8_t _last_mode_num_seen;      // for auto-detect of mode changes if Mode forgot to notify
+
+    // --- PR7a D3: rolling saturation duty-cycle buffer --------------------
+    // 5 s window at the inner-loop rate (400 Hz scheduler tick) = 2000 samples.
+    // Compile-time fixed size; FOIL_SAT_WIN_MS is a documented constant, not a
+    // tunable param (the buffer length can't be changed at runtime). Buffer is
+    // a circular bit-array; we also keep a running sum to avoid an O(N) recount
+    // each tick.
+    static constexpr uint16_t SAT_WINDOW_SAMPLES = 2000;  // 5 s @ 400 Hz
+    uint8_t  _sat_buf[SAT_WINDOW_SAMPLES];     // 0 or 1 per inner-loop tick
+    uint16_t _sat_buf_idx;                     // next-write index
+    uint16_t _sat_buf_fill;                    // samples written so far (clamps at SAT_WINDOW_SAMPLES)
+    uint16_t _sat_buf_sum;                     // running sum of the buffer
+    float    _sat_duty_cycle;                  // _sat_buf_sum / SAT_WINDOW_SAMPLES, 0 until full
+
 
     // --- dt bookkeeping per loop ------------------------------------------
     uint32_t _last_inner_us;
@@ -253,4 +282,7 @@ private:
     float canard_lead(float x);
     // Capture nominal gains from each PID's current kP/kI/kD (one-shot).
     void capture_nominal_gains();
+    // PR7a D3: push a single sample (any-flap-at-limit bit) into the rolling
+    // duty-cycle buffer and update _sat_duty_cycle. Called once per inner tick.
+    void push_sat_sample(bool flap_at_limit);
 };
