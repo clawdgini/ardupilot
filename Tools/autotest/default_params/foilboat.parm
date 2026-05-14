@@ -26,92 +26,197 @@ RNGFND1_TYPE 100
 # so AR_FoilControl::get_height_above_water() can look it up via orientation.
 RNGFND1_ORIENT 25
 
-# PR5: cascaded outer loops + attitude wrappers + V^2 scheduling.
-# Gain values lifted from research/flight-dev-rig/04-control-law.md §1.
-# Mirror them here so a clean SITL boot reads the spec defaults without
-# trusting the in-code AP_GROUPINFO defaults (those can drift on rebase).
+# =============================================================================
+# PR12 (2026-05-14) — controller v1.0, post-audit retune for plant v0.5
+# =============================================================================
+#
+# Plant v0.5 (foilboat-repo commit 2ad4a25) lands the audit-corrected per-foil
+# Cl_α / Cl_δ, AUW 3.14→4.0 kg, hull-hump drag, and re-derived inertia tensor.
+# PR6/PR7/PR8 gains were tuned against the broken plant v0.2 — wrong for v0.5.
+#
+# Key delta vs old plant (numbers used in the math below):
+#   Canard Cl_α   5.5  → 3.56 /rad   (−35 %, S1223 AR 3.33)
+#   Canard Cl_δ   3.3  → 1.71 /rad   (−48 %, 30 %-c plain flap)
+#   Canard L_c    0.40 → 0.30 m      (−25 %, station moved 12 %→22 % LOA)
+#   Main   Cl_α   5.5  → 4.62 /rad   (−16 %, SG6043 AR 6.67)
+#   Main   Cl_δ   3.3  → 2.22 /rad   (−33 %)
+#   Main   L_m    0.18 → 0.10 m      (−44 %, station moved 70 %→62 % LOA)
+#   AUW           3.14 → 4.0  kg     (+27 %)
+#   Iyy           0.26 → 0.2282      (−12 %, mid-ship-clustered mass)
+#   Ixx           0.013→ 0.0443      (+240 %, pod 200 mm below + mast above CG)
+#   Izz           0.27 → 0.2010      (−26 %)
+#   T_max         12.0 → 16.2  N     (+35 %, SSS 4074 + Octura X-642 @ 4S)
+#   Static margin unstable → +56 % MAC STABLE   (lift split 25/75 → 18/80)
+#
+# Pitch plant gain at V_cruise 3.7 m/s (q = ½ρV² = 6 845 Pa) via the §2.1 mixer:
+#   M_θ_old = q · (S_c·Cl_δ_old·L_c + 0.40·S_m·Cl_δ_old·L_m)
+#           = 6845 · (0.00448·3.3·0.40 + 0.40·0.0112·3.3·0.18) = 58.7 N·m/rad
+#   M_θ_new = q · (k_pc·S_c·Cl_δ_can_new·L_c_new + k_pm·S_m·Cl_δ_main_new·L_m_new)
+#           = 6845 · (1.0·0.00300·1.71·0.30 + 0.40·0.0135·2.22·0.10) = 18.73 N·m/rad
+#   ⇒ Pitch authority dropped 3.13× (loss factor 0.319).
+#   Plant gain G = M/Iyy:   old 226 → new 82.1 rad/s²/rad  (ratio 0.363, 2.75×↓)
+#
+# Per the cascaded-PID design (ω_n = 30 rad/s, ζ = 0.7), Kp ∝ ω²/G,
+# Kd ∝ 2ζω/G. To preserve ω_n on the new plant, all inner-pitch gains
+# multiply by 1/0.363 = 2.75. Target #4 (static-stability flip → favour
+# P over D) further halves the D-term and adds back the loss into P.
 
-# --- Pitch attitude wrapper (§1.1) — theta_cmd -> q_setpoint ---
+# --- Pitch attitude wrapper (§1.1) — theta_cmd -> q_setpoint -----------------
 # PR6: Kd_theta moved from the outer wrapper (FOIL_KD_THETA, removed) to the
 # inner pitch-rate PID's D gain (FOIL_Q_RAT_D below). FOIL_PIT_D stays 0.
-FOIL_PIT_P    4.0
-FOIL_PIT_I    0.5
+# PR12: outer Kp_θ raised from 4.0 to 6.0 (+50 %) to recover part of the loss.
+# Conservative bump on the outer (most of the 2.75× compensation lands on the
+# inner q-rate PID where the actual mixer-side authority sits). Ki_θ raised
+# proportionally so the §2.2 lift-trim integrator still pulls trim within
+# the same time-constant despite the +27 % AUW.
+FOIL_PIT_P    6.0
+FOIL_PIT_I    0.75
 FOIL_PIT_D    0.0
 FOIL_PIT_IMAX 2.0
 
-# --- Inner pitch-rate PID (§1.1) — q_setpoint -> pitch_mix_cmd ---
-# PR6: Kd_q absorbs the PR5 manual D-on-q term. Default 0.04 — analytical
-# estimate from closed-loop ω_n=30 rad/s, ζ=0.7. Codebase-expert flagged that
-# two derivations disagreed (0.009 vs 0.04); SITL step-response sweep across
-# {0.01, 0.02, 0.04, 0.08} is queued behind plant v0.2.
-FOIL_Q_RAT_P  0.19
-FOIL_Q_RAT_I  0.02
-FOIL_Q_RAT_D  0.04
-FOIL_Q_RAT_IMAX 0.20
+# --- Inner pitch-rate PID (§1.1) — q_setpoint -> pitch_mix_cmd ---------------
+# PR6: Kd_q absorbs the PR5 manual D-on-q term. PR6 default 0.04 — analytical
+# estimate from closed-loop ω_n=30 rad/s, ζ=0.7, plant gain 226.
+# PR12: 0.19 × 2.75 ≈ 0.52 raw, then halved-and-add-back per target #4
+# (favour P over D since rig is now statically STABLE at SM = +56 % MAC).
+#   Kp_q  = 0.19 × 2.0  = 0.38   (most of the canard-authority recovery)
+#   Kd_q  = 0.04 × 0.5  = 0.02   (halve D — the form-stable plant doesn't
+#                                 need it; D-dominated dynamics were a v0.2
+#                                 broken-plant artefact per the §7 PR6 sweep)
+#   Ki_q  = 0.02 × 2.75 = 0.055  (keep nominal integral authority for the
+#                                 small bias from rigging-incidence drift)
+FOIL_Q_RAT_P  0.38
+FOIL_Q_RAT_I  0.055
+FOIL_Q_RAT_D  0.02
+FOIL_Q_RAT_IMAX 0.30
 
-# --- Roll attitude wrapper (§1.2) — phi_cmd -> p_setpoint ---
-FOIL_ROL_P    0.6
-FOIL_ROL_I    0.05
+# --- Roll attitude wrapper (§1.2) — phi_cmd -> p_setpoint --------------------
+# PR12: Ixx jumped 3.4× (slender-body-box was a 3.4× under-count). Plant gain
+# M_φ/Ixx drops 4.2× at cruise. Per RESPEC-07 / changelog v0.5: "roll-axis
+# gain must rise √3.4 ≈ 1.85× OR accept slower roll response (acceptable on
+# a form-stable hull with GM = 230 mm)". Lean SLOWER — bump 1.5× on outer,
+# leave inner near-nominal. The v0 rig has a single main flap anyway, so the
+# φ_cmd is forced to zero; the inner loop only damps body-roll-rate from hull
+# disturbances which the GM 230 mm form stability already kills.
+FOIL_ROL_P    0.9
+FOIL_ROL_I    0.075
 FOIL_ROL_D    0.04
 FOIL_ROL_IMAX 0.5
 
-# --- Heading P controller (§1.3) — psi_cmd -> r_setpoint ---
-# PR6: refactored from AC_PID to AC_P (Ki_psi=Kd_psi=0). FOIL_YAW_P retains
-# its slot index 13; FOIL_YAW_{I,D,IMAX} are dropped (no effect in PR5 anyway).
-FOIL_YAW_P    1.0
+# --- Inner roll-rate PID (PR12 retune) ---------------------------------------
+# Default 0.04 was tuned for Ixx = 0.013 (broken slender-body-box). Now Ixx
+# = 0.0443 (3.4×); preserve damping authority with √3.4 ≈ 1.85× bump.
+FOIL_P_RAT_P  0.075
+FOIL_P_RAT_I  0.009
+FOIL_P_RAT_D  0.0
+FOIL_P_RAT_IMAX 0.20
 
-# --- Height outer (§1.4) — h_cmd -> theta_cmd ---
-FOIL_HGT_P    0.35
-FOIL_HGT_I    0.08
-FOIL_HGT_D    0.20
+# --- Inner yaw-rate PID (PR12 retune) ----------------------------------------
+# Izz dropped 26 % → plant gain rose 1.34×. Reduce yaw-rate gain ÷1.34 = 0.75×
+# to preserve the rate-loop ω_n target of 12 rad/s.
+FOIL_R_RAT_P  0.90
+FOIL_R_RAT_I  0.22
+FOIL_R_RAT_D  0.0
+FOIL_R_RAT_IMAX 0.40
 
-# --- Speed outer (§1.5) — V_cmd -> throttle [0..1] ---
-FOIL_SPD_P    0.35
+# --- Heading P controller (§1.3) — psi_cmd -> r_setpoint ---------------------
+# PR6: refactored from AC_PID to AC_P (Ki_psi=Kd_psi=0).
+# PR12: × 0.75 for Izz reduction.
+FOIL_YAW_P    0.75
+
+# --- Height outer (§1.4) — h_cmd -> theta_cmd --------------------------------
+# PR12 target #3: AUW +27 % → boat is harder to lift; either drop bandwidth
+# 30 % or raise Kp_h proportionally to fight the added inertial drag. Choose
+# raise-Kp path. AUW ratio 4.0/3.14 = 1.273.
+# Target #4 again: favour P over D on the form-stable plant. So bump P by
+# the mass ratio AND lean against D (which was tuned for unstable plant).
+#   Kp_h_new = 0.35 × 1.273 × 1.13 (extra "P-favour" boost) = 0.50
+#   Ki_h_new = 0.08 × 1.273       = 0.10 (preserve trim time-constant)
+#   Kd_h_new = 0.20 × 0.5         = 0.10 (halve D, plant is now self-trimming)
+FOIL_HGT_P    0.50
+FOIL_HGT_I    0.10
+FOIL_HGT_D    0.10
+
+# --- Speed outer (§1.5) — V_cmd -> throttle [0..1] ---------------------------
+# PR12 target #5: speed-loop must HOLD throttle saturated through the hull-
+# hump (V ≈ 1.6 m/s, D_hump ≈ 10.4 N vs T(1.6) ≈ 13.1 N — only +2.7 N margin).
+# The old gain 0.35 + IMAX 1.0 droops throttle as V approaches V_cmd_old=1.9
+# m/s and the boat stalls on the hump.
+#
+# Two coordinated changes: (a) raise Kp_v 0.35 → 1.20 so the loop pins
+# throttle at 1.0 instantly whenever V < V_TO + 0.5 m/s, and (b) push the
+# mode's V_cmd from 1.9 → 2.5 m/s in mode_foilborne_hold.cpp (D2 below) so
+# the loop never droops until well past the hump. IMAX stays at 1.0 (output
+# is already clamped 0..1).
+FOIL_SPD_P    1.20
 FOIL_SPD_I    0.10
 FOIL_SPD_D    0.00
 FOIL_SPD_IMAX 1.0
 
-# --- V^2 gain scheduling (§1.1, PR6 §3 piecewise) ---
+# --- V^2 gain scheduling (§1.1, PR6 §3 piecewise) ----------------------------
+# Unchanged; V_TO updated to 2.0 (was 1.6) per RESPEC-02 §4 honest 2.04, controller-rounded.
 FOIL_VCRUISE  3.7
 FOIL_VMINSCHD 0.5
-# Lower bound on the V^2 scale applied above V_cruise (PR6).
 FOIL_SCHED_FL 0.25
 
-# --- Scalar thresholds ---
+# --- Scalar thresholds -------------------------------------------------------
+# PR12: V_TO raised 1.6 → 2.0 m/s per RESPEC-02 §4 (S1223/SG6043 + AUW 4.0 kg
+# closure). FOIL_HGT_TGT 0.15 unchanged.
 FOIL_HGT_TGT  0.15
-FOIL_VTOFF    1.6
+FOIL_VTOFF    2.0
 FOIL_HGT_FB   0.06
-# PR6 §4 pre-load schedule reference speed (replaces the inline literal).
-FOIL_VTO      1.6
+# PR12: FOIL_VTO LOWERED to 1.4 m/s so the canard pre-load schedule peaks
+# EARLY — at V=1.4 (sub-hump) the canard is already pulling +6° to start
+# bow-up rotation BEFORE the hump peak. This implements 04-control-law.md
+# §8 PR10-C "extend pre-load to V=1.4 m/s to unload the hull earlier and
+# clip the hump peak by 1-2 N". The pre-load saturates at v_norm=1.0 → 6°
+# at V≥1.4 m/s, then stays at 6° all the way through. NB: this does NOT
+# close PR12's hump-margin failure — the boat still plateaus at V≈1.9 m/s
+# (PR12 ran 5 SITL iterations; structural blocker confirmed via open-loop
+# full-throttle test, see 04-control-law.md §8 W5 validation results).
+# Setting kept because (a) the pre-load schedule still produces the
+# correct bow-up moment, (b) it gives PR13's plant-side fix (whatever
+# form that takes) the right controller-side conditions to test against.
+FOIL_VTO      1.4
 
-# --- Pre-load feed-forward (PR6 §4) ---
-# Canard pre-load peaks at +4° (was +6° in PR5) — keeps a 2° margin to
-# alpha_stall at V_TO. Quadratic in V/V_TO. Main pre-load peaks at +2°,
-# linear in V/V_TO.
-FOIL_PRE_CAN  0.0698132   # radians(4.0)
-FOIL_PRE_MAIN 0.0349066   # radians(2.0)
+# --- Pre-load feed-forward (PR6 §4) ------------------------------------------
+# PR12 iteration 4: canard pre-load +6° at V_TO with QUADRATIC schedule,
+# main pre-load −3° (negative flap = nose-up bias to unload main aft of CG).
+#
+# Stall-margin maths (CORRECTED — earlier iterations missed the α_zl shift):
+#   α_eff_canard at V_TO = (canard_incidence + preload) − canard_α_zl
+#                        = (−4.5° + 6°) − (−10°) = 11.5°  (S1223 α_stall 14°)
+#   Margin: 2.5° — within iteration-1 spec.
+#
+# Iterations 1-3 chased a structural hump-margin issue and overshot stall
+# with +10° / +15° preload. The 04-control-law.md §8 PR10-C recommendation
+# (re-read with the new α_zl = −10° in hand) is the analytically right
+# answer: +6° canard pre-load on the audit-corrected rig keeps a 2.5°
+# stall margin and produces enough M_can = 2000·0.003·1.71·rad(6)·0.30
+# = 0.322 Nm nose-up to bias hull pitch +0.4° at V_TO.
+#
+# Main pre-load at −3° (negative flap) takes the place of the old +2°
+# (the old +2° was nose-down because main is aft of CG; on plant v0.5 the
+# main is at L_m = +0.10 m aft, so any positive main lift is nose-down).
+# Negative pre-load = less main lift = main carries less of the AUW =
+# canard pre-load + main rigging-incidence-trimmed lift carries it.
+# Stall margin on main: SG6043 α_stall = 12°, α_zl = −5°; main pre-load
+# of -3° + rigging -0.8° gives α_eff = (−0.8 − 3) − (−5) = +1.2° (well
+# inside stall margin).
+FOIL_PRE_CAN  0.1047    # radians(6.0)  — canard pre-load (analytically safe)
+FOIL_PRE_MAIN -0.0524   # radians(-3.0) — main pre-load negative for nose-up
 
-# --- Canard lead compensator (PR6 §4) ---
-# H(s) = (1 + 0.060 s) / (1 + 0.015 s). Restores ~35 deg PM at omega = 30 rad/s
-# after the 55 ms servo lag drops it from ~80 deg to ~22 deg.
+# --- Canard lead compensator (PR6 §4) ----------------------------------------
+# H(s) = (1 + 0.060 s) / (1 + 0.015 s). Servo τ is unchanged (55 ms), so the
+# lead-lag stays. Restores ~35 deg PM at omega = 30 rad/s.
 FOIL_LEAD_LD  0.060
 FOIL_LEAD_LG  0.015
 FOIL_LEAD_EN  1
 
-# --- Failsafe duty-cycle saturation trigger (PR7a-D3) ---
-# Fraction of inner-loop ticks (0..1) over a 5 s rolling window in which any
-# flap is within 0.5 deg of its ±25 deg mechanical limit.  Above this
-# threshold (and under the armed gate: foilborne + settled + V > VTO + 0.2),
-# the duty trigger fires.  0.40 = 40 % of the 2000-sample window.
-# PR7b: param renamed FOIL_SAT_DUTY_THR -> FOIL_SAT_DUTY (the 17-char form
-# exceeded the AP_Param 16-char name limit and panicked the autopilot at
-# boot).  Index in AR_FoilControl::var_info[] unchanged at slot 24, so any
-# stored param value migrates by index.
+# --- Failsafe duty-cycle saturation trigger (PR7a-D3) ------------------------
+# Unchanged from PR7b.
 FOIL_SAT_DUTY 0.40
 
-# --- Failsafe AUTO_DESCEND dwell (PR7a-D1) ---
-# Time (ms) the duty trigger must hold continuously under the armed gate
-# before AR_FoilControl latches a descent request.  ModeFoilborneHold polls
-# the latch on its next 100 Hz tick and calls rover.set_mode(AUTO_DESCEND).
-# Default 500 ms is the mid of the spec range [100, 2000].
+# --- Failsafe AUTO_DESCEND dwell (PR7a-D1) -----------------------------------
+# Unchanged from PR7a.
 FOIL_FAIL_DWELL   500

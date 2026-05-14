@@ -81,12 +81,12 @@ const AP_Param::GroupInfo ModeFoilborneHold::var_info[] = {
 
     // @Param: _V_GATE
     // @DisplayName: FBHD entry V_gps gate
-    // @Description: §3.1 entry-gate threshold on GPS groundspeed (m/s). The boat must hold V_gps ≥ this value (with the other entry gates) for FBHD_GATE_HLD ms before the height-ramp sub-state arms. Spec default 1.75 m/s = V_TO (1.6) + 0.15 m/s margin.
+    // @Description: §3.1 entry-gate threshold on GPS groundspeed (m/s). The boat must hold V_gps ≥ this value (with the other entry gates) for FBHD_GATE_HLD ms before the height-ramp sub-state arms. PR12 (plant v0.5) default 2.15 m/s = V_TO (2.0) + 0.15 m/s margin per the audit-corrected RESPEC-02 §4 take-off speed.
     // @Units: m/s
     // @Range: 0.5 5.0
     // @Increment: 0.05
     // @User: Advanced
-    AP_GROUPINFO("_V_GATE",  3, ModeFoilborneHold, _v_gate_ms,       1.75f),
+    AP_GROUPINFO("_V_GATE",  3, ModeFoilborneHold, _v_gate_ms,       2.15f),
 
     // @Param: _H_GATE
     // @DisplayName: FBHD entry h_lidar gate
@@ -223,10 +223,11 @@ bool ModeFoilborneHold::_enter()
     // until the climb has begun.
     reset_entry_state();
 
-    // Initial setpoints: V at 1.9 (drives V_TO transition), h at current h
-    // (zero-error for the height-PID — see update() for the per-tick value),
-    // heading captured here so we don't chase yaw.
-    rover.g2.foil_control.set_speed_target(1.9f);
+    // Initial setpoints: V at 2.5 (drives V_TO transition AND escapes the
+    // hump — see PR12 retune notes in update()), h at current h (zero-error
+    // for the height-PID — see update() for the per-tick value), heading
+    // captured here so we don't chase yaw.
+    rover.g2.foil_control.set_speed_target(2.5f);
     rover.g2.foil_control.set_heading_target_rad(AP::ahrs().get_yaw_rad());
     if (!is_zero(_th_override_rad)) {
         rover.g2.foil_control.set_pitch_target_rad(_th_override_rad);
@@ -346,7 +347,13 @@ void ModeFoilborneHold::update()
     }
 
     rover.g2.foil_control.set_height_target(h_cmd);
-    rover.g2.foil_control.set_speed_target(1.9f);
+    // PR12: V_cmd raised 1.9 → 2.5 m/s to hold throttle saturated through the
+    // hull-hump (V ≈ 1.6 m/s, D ≈ 10.4 N vs T(1.6) ≈ 13.1 N).  Plant v0.5's
+    // §6 hump constraint per RESPEC-08 / E1 binds at +2.7 N margin; the speed
+    // loop must not droop throttle until V is well past the hump.  With
+    // FOIL_SPD_P = 1.20 and V_cmd = 2.5, throttle pins to 1.0 below ~2.0 m/s
+    // and droops smoothly toward 0.6 at V_cruise = 3.7 m/s.
+    rover.g2.foil_control.set_speed_target(2.5f);
     // Pitch override: when FBHD_TH_OV is non-zero, bypass the height->pitch
     // cascade and force theta_cmd directly.  When zero, restore normal
     // cascaded operation (idempotent if already cleared).  Honoured in every
