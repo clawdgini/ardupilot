@@ -997,6 +997,8 @@ class ModeFoilborneHold : public Mode
 {
 public:
 
+    ModeFoilborneHold();
+
     Number mode_number() const override { return Number::FOILBORNE_HOLD; }
     const char *name() const override { return "Foilborne Hold"; }
     const char *name4() const override { return "FBHD"; }
@@ -1011,9 +1013,19 @@ public:
     // FOILBORNE_HOLD activates AR_FoilControl surface routing.
     bool is_foilborne_mode() const override { return true; }
 
+    static const struct AP_Param::GroupInfo var_info[];
+
 protected:
 
     bool _enter() override;
+
+    // PR7b: mode-level params for SITL step-response injection.  The mode
+    // owns these (not AR_FoilControl) so the controller library stays
+    // frozen post-PR7a.  Default values match the legacy hardcoded
+    // setpoints (0.15 m height, no pitch override) so existing flights
+    // see no behavior change.
+    AP_Float _h_ref_m;          // FBHD_H_REF: ride-height setpoint (m)
+    AP_Float _th_override_rad;  // FBHD_TH_OV: pitch override (rad); 0 = no override
 };
 
 class ModeAutoDescend : public Mode

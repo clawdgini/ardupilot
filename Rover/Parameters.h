@@ -427,6 +427,11 @@ public:
     AP_Float fs_gcs_timeout;
 
     class ModeCircle mode_circle;
+    // PR7b: ModeFoilborneHold owns FBHD_* params (height setpoint + pitch
+    // override) used by the W5 SITL step-response harness.  The mode object
+    // itself lives on Rover::mode_foilborne_hold; this pointer threads its
+    // var_info[] into the global G2 param tree at slot 59 via AP_SUBGROUPPTR.
+    ModeFoilborneHold *mode_foilborne_hold_ptr;
 };
 
 extern const AP_Param::Info var_info[];

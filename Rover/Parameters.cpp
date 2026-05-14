@@ -638,6 +638,10 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // @Path: ../libraries/APM_Control/AR_FoilControl.cpp
     AP_SUBGROUPINFO(foil_control, "FOIL_", 58, ParametersG2, AR_FoilControl),
 
+    // @Group: FBHD
+    // @Path: mode_foilborne_hold.cpp
+    AP_SUBGROUPPTR(mode_foilborne_hold_ptr, "FBHD", 59, ParametersG2, ModeFoilborneHold),
+
     AP_GROUPEND
 };
 
@@ -699,7 +703,8 @@ ParametersG2::ParametersG2(void)
     windvane(),
     wp_nav(attitude_control, pos_control),
     sailboat(),
-    pos_control(attitude_control)
+    pos_control(attitude_control),
+    mode_foilborne_hold_ptr(&rover.mode_foilborne_hold)
 {
     AP_Param::setup_object_defaults(this, var_info);
 }
