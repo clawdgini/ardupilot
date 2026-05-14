@@ -386,6 +386,11 @@ void Rover::update_logging1(void)
 #if AP_BEACON_ENABLED
         g2.beacon.log();
 #endif
+        // PR7a D2: AR_FoilControl FOI/FOI2/FOI3 records.  Gated on MASK_LOG_THR
+        // because foilboat telemetry sits in the same operator-tunable mask as
+        // throttle/speed records; no separate FOIL bitmask to avoid burning a
+        // MASK_LOG_* slot for a board-specific feature.
+        Log_Write_Foil();
     }
 
     if (should_log(MASK_LOG_NTUN)) {

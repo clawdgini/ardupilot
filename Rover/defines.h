@@ -15,6 +15,12 @@ enum LoggingParameters {
     LOG_NTUN_MSG,
     LOG_STEERING_MSG,
     LOG_GUIDEDTARGET_MSG,
+    // PR7a D2: AR_FoilControl streaming + one-shot logs.  FOI = outer-loop
+    // telemetry, FOI2 = PR6 schedule/preload/sat-armed telemetry, FOI3 = D1
+    // one-shot AUTO_DESCEND-request event.
+    LOG_FOI_MSG,
+    LOG_FOI2_MSG,
+    LOG_FOI3_MSG,
 };
 
 #define MASK_LOG_ATTITUDE_FAST  (1<<0)

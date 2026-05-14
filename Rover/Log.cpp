@@ -216,6 +216,39 @@ struct PACKED log_Throttle {
     float accel_x;
 };
 
+// PR7a D2: AR_FoilControl logging packets.
+//
+// FOI  — outer-loop telemetry (100 Hz cadence, downsampled to 10 Hz here).
+// FOI2 — PR6 schedule / pre-load / saturation duty (10 Hz).
+// FOI3 — D1 one-shot AUTO_DESCEND-request event (fires once per latch).
+struct PACKED log_Foil_Outer {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    float    hgt;
+    float    theta_cmd_rad;
+    float    p_setpoint;
+    float    r_setpoint;
+};
+
+struct PACKED log_Foil_Sched {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    float    canard_preload_rad;
+    float    sched_scale;
+    float    sat_duty_cycle;
+    uint8_t  sat_armed;
+    uint8_t  sat_trigger_armed;
+};
+
+struct PACKED log_Foil_Event {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    float    sat_duty_cycle;
+    uint32_t dwell_ms;
+    float    groundspeed;
+    float    engage_factor;
+};
+
 // Write a throttle control packet
 void Rover::Log_Write_Throttle()
 {
@@ -232,6 +265,50 @@ void Rover::Log_Write_Throttle()
         accel_x         : accel.x
     };
     logger.WriteBlock(&pkt, sizeof(pkt));
+}
+
+// PR7a D2: Emit FOI/FOI2 streaming records + FOI3 one-shot event.
+//
+// Pull-style: AR_FoilControl exposes the field values via const getters; the
+// controller library does not touch AP::logger().  Called from Rover's 10 Hz
+// update_logging loop.
+void Rover::Log_Write_Foil(void)
+{
+    // FOI — outer-loop telemetry.
+    struct log_Foil_Outer pkt_outer = {
+        LOG_PACKET_HEADER_INIT(LOG_FOI_MSG),
+        time_us           : AP_HAL::micros64(),
+        hgt               : g2.foil_control.get_height_above_water(),
+        theta_cmd_rad     : g2.foil_control.get_theta_cmd_rad(),
+        p_setpoint        : g2.foil_control.get_p_setpoint_rad_s(),
+        r_setpoint        : g2.foil_control.get_r_setpoint_rad_s(),
+    };
+    logger.WriteBlock(&pkt_outer, sizeof(pkt_outer));
+
+    // FOI2 — schedule + pre-load + saturation duty.
+    struct log_Foil_Sched pkt_sched = {
+        LOG_PACKET_HEADER_INIT(LOG_FOI2_MSG),
+        time_us            : AP_HAL::micros64(),
+        canard_preload_rad : g2.foil_control.get_canard_preload_last(),
+        sched_scale        : g2.foil_control.get_last_gain_scale(),
+        sat_duty_cycle     : g2.foil_control.saturation_duty(),
+        sat_armed          : (uint8_t)g2.foil_control.get_sat_armed(),
+        sat_trigger_armed  : (uint8_t)g2.foil_control.get_sat_trigger_armed(),
+    };
+    logger.WriteBlock(&pkt_sched, sizeof(pkt_sched));
+
+    // FOI3 — one-shot AUTO_DESCEND-request event (fires once per latch).
+    if (g2.foil_control.consume_failsafe_event_log_pending()) {
+        struct log_Foil_Event pkt_evt = {
+            LOG_PACKET_HEADER_INIT(LOG_FOI3_MSG),
+            time_us         : AP_HAL::micros64(),
+            sat_duty_cycle  : g2.foil_control.saturation_duty(),
+            dwell_ms        : g2.foil_control.get_failsafe_dwell_ms(),
+            groundspeed     : AP::ahrs().groundspeed(),
+            engage_factor   : g2.foil_control.engage_factor(),
+        };
+        logger.WriteBlock(&pkt_evt, sizeof(pkt_evt));
+    }
 }
 
 void Rover::Log_Write_RC(void)
@@ -311,6 +388,40 @@ const LogStructure Rover::log_structure[] = {
     
     { LOG_GUIDEDTARGET_MSG, sizeof(log_GuidedTarget),
       "GUIP",  "QBffffff",    "TimeUS,Type,pX,pY,pZ,vX,vY,vZ", "s-mmmnnn", "F-000000" },
+
+// @LoggerMessage: FOI
+// @Description: AR_FoilControl outer-loop telemetry
+// @Field: TimeUS: Time since system startup
+// @Field: Hgt: Height above water from downward rangefinder (m), NaN if unhealthy
+// @Field: ThC: Pitch-cmd from height loop (rad)
+// @Field: PSet: Roll-rate target (rad/s)
+// @Field: RSet: Yaw-rate target (rad/s)
+
+    { LOG_FOI_MSG, sizeof(log_Foil_Outer),
+      "FOI", "Qffff", "TimeUS,Hgt,ThC,PSet,RSet", "smrrr", "F0000", true },
+
+// @LoggerMessage: FOI2
+// @Description: AR_FoilControl PR6 schedule + pre-load + saturation duty
+// @Field: TimeUS: Time since system startup
+// @Field: Preld: Canard pre-load applied this tick (rad)
+// @Field: SchS: Active V^2 gain-schedule scale (multiplier on nominal gains)
+// @Field: Duty: Saturation duty cycle over the 5 s rolling window (0..1)
+// @Field: SArm: Failsafe arming gate (foilborne + settled), 0/1
+// @Field: STrg: Duty-cycle saturation trigger (SArm && Duty > FOIL_SAT_DUTY_THR), 0/1
+
+    { LOG_FOI2_MSG, sizeof(log_Foil_Sched),
+      "FOI2", "QfffBB", "TimeUS,Preld,SchS,Duty,SArm,STrg", "sr-r--", "F0000-", true },
+
+// @LoggerMessage: FOI3
+// @Description: AR_FoilControl one-shot AUTO_DESCEND request event
+// @Field: TimeUS: Time since system startup
+// @Field: Duty: Saturation duty cycle at the latching tick (0..1)
+// @Field: DwlMs: FOIL_FAIL_DWELL counter at latch (ms)
+// @Field: V: Groundspeed at latch (m/s)
+// @Field: Eng: Soft-engage factor at latch (0..1)
+
+    { LOG_FOI3_MSG, sizeof(log_Foil_Event),
+      "FOI3", "QfIff", "TimeUS,Duty,DwlMs,V,Eng", "s-snn", "F-000" },
 };
 
 uint8_t Rover::get_num_log_structures() const

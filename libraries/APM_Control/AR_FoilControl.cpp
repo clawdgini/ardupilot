@@ -17,7 +17,6 @@
 
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_HAL/AP_HAL.h>
-#include <AP_Logger/AP_Logger.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_Math/rotations.h>
 #include <RC_Channel/RC_Channel.h>
@@ -452,7 +451,7 @@ AR_FoilControl::AR_FoilControl() :
     _sat_duty_cycle(0.0f),
     _failsafe_dwell_ms(0),
     _failsafe_descend_request(false),
-    _failsafe_event_logged(false),
+    _failsafe_event_pending(false),
     _last_inner_us(0),
     _last_outer_us(0),
     _last_throttle_us(0),
@@ -494,7 +493,18 @@ void AR_FoilControl::notify_mode_change()
     // don't want a stale latch re-triggering after the mode has swapped.
     _failsafe_descend_request = false;
     _failsafe_dwell_ms = 0;
-    _failsafe_event_logged = false;
+    _failsafe_event_pending = false;
+}
+
+// PR7a D2: pull-and-clear gate for the FOI3 one-shot event.  Called by
+// Rover/Log.cpp at 10 Hz.  Returns true exactly once per failsafe latch.
+bool AR_FoilControl::consume_failsafe_event_log_pending()
+{
+    if (_failsafe_event_pending) {
+        _failsafe_event_pending = false;
+        return true;
+    }
+    return false;
 }
 
 // PR7a D3: push a single flap-at-limit sample into the circular buffer and
@@ -839,38 +849,12 @@ void AR_FoilControl::update_outer()
     // theta_pid is run inside update_inner() so it ticks at 400 Hz and tracks
     // the latest θ_cmd produced here.
 
-#if HAL_LOGGING_ENABLED
-    // @LoggerMessage: FOIL
-    // @Description: AR_FoilControl outer-loop telemetry
-    // @Field: TimeUS: Time since system startup
-    // @Field: Hgt: Height above water from downward rangefinder (m), NaN if unhealthy
-    // @Field: ThC: Pitch-cmd from height loop (rad)
-    // @Field: PSet: Roll-rate target (rad/s)
-    // @Field: RSet: Yaw-rate target (rad/s)
-    AP::logger().WriteStreaming("FOIL",
-                                "TimeUS,Hgt,ThC,PSet,RSet",
-                                "smrrr",
-                                "F0000",
-                                "Qffff",
-                                AP_HAL::micros64(),
-                                h_meas,
-                                _theta_cmd_rad,
-                                _p_setpoint_rad_s,
-                                _r_setpoint_rad_s);
-    // PR6 extension: Preld (canard preload rad), SchS (gain scale active
-    // multiplier), SatA (sat_trigger_armed). Kept as a separate streaming
-    // message to avoid touching the PR5 FOIL schema until PR7 lands the full
-    // LogStructure with all PR6 fields.
-    AP::logger().WriteStreaming("FOI2",
-                                "TimeUS,Preld,SchS,SatA",
-                                "srr-",
-                                "F000",
-                                "QffB",
-                                AP_HAL::micros64(),
-                                _canard_preload_last,
-                                _last_gain_scale,
-                                (uint8_t)_sat_trigger_armed);
-#endif
+    // PR7a D2: FOI/FOI2 emissions moved to Rover/Log.cpp so we can register
+    // them as static LogStructure entries (gives MAVLink log-download clients
+    // proper field metadata).  Snapshot values (_theta_cmd_rad, _p_setpoint_rad_s,
+    // _r_setpoint_rad_s, _canard_preload_last, _last_gain_scale, _sat_trigger_armed,
+    // _sat_duty_cycle) are exposed via const getters; Rover pulls them at
+    // its own logging cadence.
 }
 
 // -----------------------------------------------------------------------------
@@ -1118,25 +1102,10 @@ void AR_FoilControl::update_failsafe()
         if (_failsafe_dwell_ms >= (uint32_t)_fail_dwell_ms.get() &&
             !_failsafe_descend_request) {
             _failsafe_descend_request = true;
-#if HAL_LOGGING_ENABLED
-            if (!_failsafe_event_logged) {
-                // FOI3: one-shot event log at the moment we request AUTO_DESCEND.
-                // Kept as a separate streaming message from FOI2 so log readers
-                // can index the event without scanning the streaming series.
-                // (Static LogStructure registration for FOI3 lands in PR7a-D2.)
-                AP::logger().WriteStreaming("FOI3",
-                                            "TimeUS,Duty,DwellMs,V,Engage",
-                                            "s---n",
-                                            "F0000",
-                                            "QfIff",
-                                            AP_HAL::micros64(),
-                                            _sat_duty_cycle,
-                                            _failsafe_dwell_ms,
-                                            V,
-                                            _engage_factor);
-                _failsafe_event_logged = true;
-            }
-#endif
+            // PR7a D2: signal the FOI3 one-shot event to Rover/Log.cpp via a
+            // pull-and-clear pending flag, rather than emitting WriteStreaming
+            // from inside the controller library.
+            _failsafe_event_pending = true;
         }
     } else {
         _failsafe_dwell_ms = 0;

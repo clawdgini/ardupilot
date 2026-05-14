@@ -124,6 +124,21 @@ public:
     // body-rate outputs to prevent the cascade slamming at transition.
     float engage_factor() const { return _engage_factor; }
 
+    // --- PR7a D2: getters used by Rover/Log.cpp to emit FOI/FOI2/FOI3 -----
+    // Kept slim: only what Rover/Log already snapshots. AR_FoilControl no
+    // longer reaches into AP::logger() directly — logging is owned by Rover.
+    float get_theta_cmd_rad()         const { return _theta_cmd_rad; }
+    float get_p_setpoint_rad_s()      const { return _p_setpoint_rad_s; }
+    float get_r_setpoint_rad_s()      const { return _r_setpoint_rad_s; }
+    float get_canard_preload_last()   const { return _canard_preload_last; }
+    float get_last_gain_scale()       const { return _last_gain_scale; }
+    bool  get_sat_armed()             const { return _sat_armed; }
+    bool  get_sat_trigger_armed()     const { return _sat_trigger_armed; }
+    uint32_t get_failsafe_dwell_ms()  const { return _failsafe_dwell_ms; }
+    // Pull-and-clear gate for the FOI3 one-shot event: returns true exactly
+    // once per latch (the tick on which the AUTO_DESCEND request first fires).
+    bool consume_failsafe_event_log_pending();
+
     // parameter var table
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -275,7 +290,11 @@ private:
     // mode swap and re-fire after AutoDescend has already taken over.
     uint32_t _failsafe_dwell_ms;
     bool     _failsafe_descend_request;
-    bool     _failsafe_event_logged;           // one-shot for the FOI3 event line
+    // PR7a D2: one-shot pending flag for the FOI3 event line.  Set once when
+    // _failsafe_descend_request latches; cleared by Rover's log path via
+    // consume_failsafe_event_log_pending().  Decouples AR_FoilControl from
+    // AP::logger() so the controller library stays Rover-agnostic.
+    bool     _failsafe_event_pending;
 
     // --- dt bookkeeping per loop ------------------------------------------
     uint32_t _last_inner_us;
