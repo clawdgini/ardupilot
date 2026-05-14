@@ -23,6 +23,17 @@ bool ModeFoilborneHold::_enter()
 
 void ModeFoilborneHold::update()
 {
+    // PR7a D1: failsafe-descend handover.  AR_FoilControl raises this latch
+    // when the duty-cycle saturation trigger has held under the armed gate
+    // (foilborne + settled + above V_TO) for FOIL_FAIL_DWELL ms.  Swap to
+    // AUTO_DESCEND immediately; foil_control's notify_mode_change() (called
+    // from AutoDescend::_enter) wipes the latch + dwell + duty buffer so the
+    // failsafe state machine starts fresh in the descent mode.
+    if (rover.g2.foil_control.should_failsafe_descend()) {
+        rover.set_mode(rover.mode_auto_descend, ModeReason::FAILSAFE);
+        return;
+    }
+
     // Setpoints are sticky after _enter(); no per-tick churn unless the pilot
     // adjusts the stick (TODO: PR6 hooks stick-driven heading/speed nudge).
     rover.g2.foil_control.set_height_target(0.15f);

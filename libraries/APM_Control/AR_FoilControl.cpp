@@ -164,6 +164,12 @@
 // of the ±25° clamp counts as saturated.
 #define AR_FOILCONTROL_SAT_EPSILON_RAD     0.00873f
 
+// PR7a D1: failsafe dwell before AUTO_DESCEND is requested (ms).
+// Counts up while _sat_trigger_armed is set inside update_failsafe(); when it
+// exceeds this dwell, _failsafe_descend_request latches true and the next
+// Rover mode tick swaps the mode via rover.set_mode(AUTO_DESCEND).
+#define AR_FOILCONTROL_FAIL_DWELL_MS       500
+
 
 // SRV_Channels::set_angle takes uint16_t centidegree half-range.
 #define AR_FOILCONTROL_SRV_ANGLE_CD      2500
@@ -369,6 +375,18 @@ const AP_Param::GroupInfo AR_FoilControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("SAT_DUTY_THR", 24, AR_FoilControl, _sat_duty_thr, AR_FOILCONTROL_SAT_DUTY_THR),
 
+    // @Param: FAIL_DWELL
+    // @DisplayName: Failsafe AUTO_DESCEND dwell
+    // @Description: Time the duty-cycle saturation trigger must hold under the
+    // failsafe arming gate before _failsafe_descend_request latches true.
+    // Rover modes poll should_failsafe_descend() and call
+    // rover.set_mode(AUTO_DESCEND, FAILSAFE) on the next tick.
+    // @Units: ms
+    // @Range: 100 2000
+    // @Increment: 50
+    // @User: Advanced
+    AP_GROUPINFO("FAIL_DWELL",  25, AR_FoilControl, _fail_dwell_ms, AR_FOILCONTROL_FAIL_DWELL_MS),
+
     AP_GROUPEND
 };
 
@@ -432,6 +450,9 @@ AR_FoilControl::AR_FoilControl() :
     _sat_buf_fill(0),
     _sat_buf_sum(0),
     _sat_duty_cycle(0.0f),
+    _failsafe_dwell_ms(0),
+    _failsafe_descend_request(false),
+    _failsafe_event_logged(false),
     _last_inner_us(0),
     _last_outer_us(0),
     _last_throttle_us(0),
@@ -447,10 +468,11 @@ AR_FoilControl::AR_FoilControl() :
     }
 }
 
-// PR7a D3: explicit out-of-line notify_mode_change so we can wipe the
-// duty-cycle ring buffer + reset the trigger-armed flag on every mode entry.
-// Each Rover mode's _enter() already calls this; PR6 only needed it to reset
-// _continuous_sat_s and _t_since_mode_change_s.
+// PR7a D3 + D1: explicit out-of-line notify_mode_change.  Wipes the
+// duty-cycle ring buffer (D3) and drops the AUTO_DESCEND request latch +
+// failsafe dwell (D1) on every mode entry.  Each Rover mode's _enter()
+// already calls this; PR6 only needed it to reset _continuous_sat_s and
+// _t_since_mode_change_s.
 void AR_FoilControl::notify_mode_change()
 {
     _continuous_sat_s = 0.0f;
@@ -467,6 +489,12 @@ void AR_FoilControl::notify_mode_change()
     for (uint16_t i = 0; i < SAT_WINDOW_SAMPLES; i++) {
         _sat_buf[i] = 0;
     }
+    // PR7a D1: drop the AUTO_DESCEND request latch + dwell.  Modes consume
+    // the latch once on entry (e.g. ModeAutoDescend is the consumer) and we
+    // don't want a stale latch re-triggering after the mode has swapped.
+    _failsafe_descend_request = false;
+    _failsafe_dwell_ms = 0;
+    _failsafe_event_logged = false;
 }
 
 // PR7a D3: push a single flap-at-limit sample into the circular buffer and
@@ -1049,6 +1077,7 @@ void AR_FoilControl::update_failsafe()
         dt = constrain_float(dt, 0.01f, 0.5f);
     }
     _last_failsafe_us = now_us;
+    const uint32_t dt_ms = (uint32_t)(dt * 1000.0f + 0.5f);
 
     _t_since_mode_change_s += dt;
 
@@ -1068,13 +1097,49 @@ void AR_FoilControl::update_failsafe()
     _sat_trigger_armed = _sat_armed && duty_exceeded;
 
     // --- Continuous-saturation dwell (PR6, retained for diagnostics) ------
-    // PR7a's failsafe-action wiring (D1) will hang the AUTO_DESCEND request
-    // off _sat_trigger_armed in a follow-up commit; for now the duty trigger
-    // is observable via FOI2's SatA field but does not yet drive a mode swap.
+    // PR7a-D1 hangs the AUTO_DESCEND request off the duty-cycle trigger
+    // (_sat_trigger_armed) below.  The continuous-sat dwell is kept here for
+    // logging / future heuristics but is not on the failsafe-action path.
     if (_sat_armed && _pitch_saturated) {
         _continuous_sat_s += dt;
     } else {
         _continuous_sat_s = 0.0f;
+    }
+
+    // --- PR7a D1: FOIL_FAIL_DWELL counter -> AUTO_DESCEND request ---------
+    // Accumulate dwell while the duty-cycle trigger is armed.  Latch the
+    // request when the dwell exceeds FOIL_FAIL_DWELL; the latch is consumed
+    // by Rover modes (ModeFoilborneHold::update polls should_failsafe_descend)
+    // and cleared on the next notify_mode_change().  A transient duty dip
+    // resets the dwell counter but does NOT drop the latch — once requested,
+    // the descent stays requested until the mode actually switches.
+    if (_sat_trigger_armed) {
+        _failsafe_dwell_ms += dt_ms;
+        if (_failsafe_dwell_ms >= (uint32_t)_fail_dwell_ms.get() &&
+            !_failsafe_descend_request) {
+            _failsafe_descend_request = true;
+#if HAL_LOGGING_ENABLED
+            if (!_failsafe_event_logged) {
+                // FOI3: one-shot event log at the moment we request AUTO_DESCEND.
+                // Kept as a separate streaming message from FOI2 so log readers
+                // can index the event without scanning the streaming series.
+                // (Static LogStructure registration for FOI3 lands in PR7a-D2.)
+                AP::logger().WriteStreaming("FOI3",
+                                            "TimeUS,Duty,DwellMs,V,Engage",
+                                            "s---n",
+                                            "F0000",
+                                            "QfIff",
+                                            AP_HAL::micros64(),
+                                            _sat_duty_cycle,
+                                            _failsafe_dwell_ms,
+                                            V,
+                                            _engage_factor);
+                _failsafe_event_logged = true;
+            }
+#endif
+        }
+    } else {
+        _failsafe_dwell_ms = 0;
     }
 }
 

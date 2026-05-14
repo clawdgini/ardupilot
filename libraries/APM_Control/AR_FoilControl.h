@@ -109,6 +109,12 @@ public:
     // Range [0..1]; reads 0 until the rolling buffer is full (post-boot warm-up).
     float saturation_duty() const { return _sat_duty_cycle; }
 
+    // True once the duty-cycle saturation trigger has held for FOIL_FAIL_DWELL
+    // ms under the failsafe arming gate (PR7a D1).  Latched until the next
+    // notify_mode_change(), so a Rover mode that polls this and switches to
+    // AUTO_DESCEND won't see a stale latch on subsequent ticks.
+    bool should_failsafe_descend() const { return _failsafe_descend_request; }
+
     // Latest throttle command from the speed PID (0..1).  Modes that close
     // the speed loop read this each tick and pass it to AP_MotorsUGV.
     float get_throttle_cmd() const { return _throttle_cmd; }
@@ -170,6 +176,8 @@ private:
 
     // PR7a D3: failsafe duty-cycle trigger param.
     AP_Float _sat_duty_thr;         // FOIL_SAT_DUTY_THR - duty-cycle threshold (0..1)
+    // PR7a D1: dwell time before _failsafe_descend_request latches (ms).
+    AP_Int32 _fail_dwell_ms;        // FOIL_FAIL_DWELL   - dwell time (ms)
 
     // --- volatile setpoints (not persisted) -------------------------------
     float _height_target_m;
@@ -258,6 +266,16 @@ private:
     uint16_t _sat_buf_sum;                     // running sum of the buffer
     float    _sat_duty_cycle;                  // _sat_buf_sum / SAT_WINDOW_SAMPLES, 0 until full
 
+    // --- PR7a D1: failsafe dwell + AUTO_DESCEND request -------------------
+    // Counts up by dt_ms inside update_failsafe() while _sat_trigger_armed is
+    // set; resets to 0 the moment it clears.  When the count exceeds
+    // FOIL_FAIL_DWELL, _failsafe_descend_request latches true (consumed by
+    // Rover modes that poll should_failsafe_descend()).  The latch is cleared
+    // on the next notify_mode_change() so it doesn't survive a successful
+    // mode swap and re-fire after AutoDescend has already taken over.
+    uint32_t _failsafe_dwell_ms;
+    bool     _failsafe_descend_request;
+    bool     _failsafe_event_logged;           // one-shot for the FOI3 event line
 
     // --- dt bookkeeping per loop ------------------------------------------
     uint32_t _last_inner_us;
