@@ -97,3 +97,17 @@ FOIL_PRE_MAIN 0.0349066   # radians(2.0)
 FOIL_LEAD_LD  0.060
 FOIL_LEAD_LG  0.015
 FOIL_LEAD_EN  1
+
+# --- Failsafe duty-cycle saturation trigger (PR7a-D3) ---
+# Fraction of inner-loop ticks (0..1) over a 5 s rolling window in which any
+# flap is within 0.5 deg of its ±25 deg mechanical limit.  Above this
+# threshold (and under the armed gate: foilborne + settled + V > VTO + 0.2),
+# the duty trigger fires.  0.40 = 40 % of the 2000-sample window.
+FOIL_SAT_DUTY_THR 0.40
+
+# --- Failsafe AUTO_DESCEND dwell (PR7a-D1) ---
+# Time (ms) the duty trigger must hold continuously under the armed gate
+# before AR_FoilControl latches a descent request.  ModeFoilborneHold polls
+# the latch on its next 100 Hz tick and calls rover.set_mode(AUTO_DESCEND).
+# Default 500 ms is the mid of the spec range [100, 2000].
+FOIL_FAIL_DWELL   500
