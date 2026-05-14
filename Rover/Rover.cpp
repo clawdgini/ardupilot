@@ -115,6 +115,11 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
 #endif
     SCHED_TASK(gcs_failsafe_check,     10,    200,  81),
     SCHED_TASK_CLASS(AR_FoilControl,      &rover.g2.foil_control,  update_failsafe, 10,  100,  82),
+    // PR14a: W6 failsafe-matrix dispatcher.  Polls AR_FoilControl getters +
+    // Rover-native failsafes; dispatches a single foilboat-specific action
+    // per synthesis §5.1 single-dispatch rule.  10 Hz / 200 µs budget per
+    // synthesis §6 latency tier mapping (MEDIUM faults @ 5 ticks dwell).
+    SCHED_TASK_CLASS(FoilboatFailsafe,    &rover.foilboat_failsafe, check,          10,  200,  83),
 #if AP_FENCE_ENABLED
     SCHED_TASK(fence_check,            10,    200,  84),
 #endif
@@ -156,7 +161,8 @@ constexpr int8_t Rover::_failsafe_priorities[7];
 Rover::Rover(void) :
     AP_Vehicle(),
     param_loader(var_info),
-    control_mode(&mode_initializing)
+    control_mode(&mode_initializing),
+    foilboat_failsafe(*this)
 {
 }
 

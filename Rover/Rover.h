@@ -73,6 +73,7 @@
 #include "RC_Channel_Rover.h"                  // RC Channel Library
 
 #include "mode.h"
+#include "foilboat_failsafe.h"
 
 class Rover : public AP_Vehicle {
 public:
@@ -109,6 +110,7 @@ public:
     friend class ModeHullBorne;
     friend class ModeFoilborneHold;
     friend class ModeAutoDescend;
+    friend class FoilboatFailsafe;
 
     friend class RC_Channel_Rover;
     friend class RC_Channels_Rover;
@@ -254,6 +256,12 @@ private:
     ModeHullBorne     mode_hull_borne;
     ModeFoilborneHold mode_foilborne_hold;
     ModeAutoDescend   mode_auto_descend;
+
+    // PR14a: W6 failsafe-matrix dispatcher (see foilboat_failsafe.{h,cpp}).
+    // 10 Hz scheduler task; consumes AR_FoilControl getters + Rover-native
+    // failsafes; dispatches AUTO_DESCEND / REVERT_HULL_BORNE / MOTOR_OFF via
+    // set_mode(..., ModeReason::FOILBOAT_FAILSAFE).
+    FoilboatFailsafe  foilboat_failsafe;
 
     // cruise throttle and speed learning
     typedef struct {

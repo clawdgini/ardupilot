@@ -232,6 +232,9 @@ public:
 
         k_param_vehicle = 257, // vehicle common block of parameters
         k_param__gcs = 258,
+        // PR14a: W6 failsafe-matrix dispatcher.  Top-level GOBJECT under
+        // prefix FFS_; see foilboat_failsafe.{h,cpp} for the class.
+        k_param_foilboat_failsafe = 259,
         };
 
     AP_Int16    format_version;

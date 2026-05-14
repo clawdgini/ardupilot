@@ -317,6 +317,14 @@ const AP_Param::Info Rover::var_info[] = {
     // @Path: Parameters.cpp
     GOBJECT(g2, "",  ParametersG2),
 
+    // PR14a: W6 failsafe-matrix dispatcher.  Top-level (not under g2) because
+    // FoilboatFailsafe holds Rover&, not a g2 member, and lives in Rover.h
+    // alongside the mode singletons.  Prefix FFS_ stays under the 16-char
+    // AP_Param suffix limit for the per-fault enable bits.
+    // @Group: FFS_
+    // @Path: foilboat_failsafe.cpp
+    GOBJECT(foilboat_failsafe, "FFS_", FoilboatFailsafe),
+
 #if OSD_ENABLED || OSD_PARAM_ENABLED
     // @Group: OSD
     // @Path: ../libraries/AP_OSD/AP_OSD.cpp
