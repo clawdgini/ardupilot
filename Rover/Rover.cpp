@@ -397,6 +397,10 @@ void Rover::update_logging1(void)
         // throttle/speed records; no separate FOIL bitmask to avoid burning a
         // MASK_LOG_* slot for a board-specific feature.
         Log_Write_Foil();
+        // PR14a D2: FoilboatFailsafe state-machine FOI4 stream.  Same gate as
+        // the FOI/FOI2/FOI3 records above so post-flight inspection sees the
+        // controller and the failsafe matrix in lock-step.
+        Log_Write_Foilboat_Failsafe();
     }
 
     if (should_log(MASK_LOG_NTUN)) {

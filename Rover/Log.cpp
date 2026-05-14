@@ -249,6 +249,23 @@ struct PACKED log_Foil_Event {
     float    engage_factor;
 };
 
+// PR14a D2: FoilboatFailsafe streaming state-machine packet (FOI4).
+//
+// Cadence 10 Hz from update_logging1 (PR7a precedent). Fields per synthesis
+// §4 plus a deliberate uint16_t→uint32_t widening on the mask fields: the
+// canonical FoilFault enum has 25 bit positions (rows S1..H1, synthesis §2)
+// which does not fit in 16 bits. The synthesis table notates the masks as
+// "H" but predated the cross-review enum growth to 25 rows. Using `I` here
+// preserves 1-bit-per-row addressability for the full matrix.
+struct PACKED log_Foilboat_Failsafe {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    uint32_t fault_mask;
+    uint32_t armed_mask;
+    uint8_t  response;
+    uint8_t  severity;
+};
+
 // Write a throttle control packet
 void Rover::Log_Write_Throttle()
 {
@@ -309,6 +326,25 @@ void Rover::Log_Write_Foil(void)
         };
         logger.WriteBlock(&pkt_evt, sizeof(pkt_evt));
     }
+}
+
+// PR14a D2: Emit the FoilboatFailsafe FOI4 streaming record (10 Hz).
+//
+// Pull-style: FoilboatFailsafe exposes the fields via const getters; the
+// failsafe class does not reach into AP::logger().  Called from Rover's 10 Hz
+// update_logging1 path immediately after Log_Write_Foil() so FOI/FOI2/FOI3
+// and FOI4 share a timestamp epoch.
+void Rover::Log_Write_Foilboat_Failsafe(void)
+{
+    struct log_Foilboat_Failsafe pkt = {
+        LOG_PACKET_HEADER_INIT(LOG_FOI4_MSG),
+        time_us    : AP_HAL::micros64(),
+        fault_mask : foilboat_failsafe.active_fault_mask(),
+        armed_mask : foilboat_failsafe.armed_fault_mask(),
+        response   : (uint8_t)foilboat_failsafe.last_action(),
+        severity   : foilboat_failsafe.severity(),
+    };
+    logger.WriteBlock(&pkt, sizeof(pkt));
 }
 
 void Rover::Log_Write_RC(void)
@@ -422,6 +458,23 @@ const LogStructure Rover::log_structure[] = {
 
     { LOG_FOI3_MSG, sizeof(log_Foil_Event),
       "FOI3", "QfIff", "TimeUS,Duty,DwlMs,V,Eng", "s-snn", "F-000" },
+
+// @LoggerMessage: FOI4
+// @Description: FoilboatFailsafe state-machine streaming (10 Hz, PR14a D2).
+// @Field: TimeUS: Time since system startup
+// @Field: Fault: Bitmask of FoilFault rows currently latched. Bit positions
+//                match the synthesis §2 table (S1=0, ..., H1=24).  Widened
+//                from `H` to `I` versus the brief: the canonical 25-row enum
+//                does not fit in 16 bits.
+// @Field: Armed: Bitmask of FoilFault rows whose dwell counter is ticking
+//                (early-warning view).  Same bit layout as `Fault`.
+// @Field: Resp:  Dispatched FoilFailsafeAction this tick.
+//                0=STAY, 1=REVERT_HULL_BORNE, 2=AUTO_DESCEND, 3=MOTOR_OFF.
+// @Field: Sev:   Severity of the dispatched action.  0=INFO (STAY),
+//                1=WARN (REVERT_HULL_BORNE), 2=CRIT (AUTO_DESCEND / MOTOR_OFF).
+
+    { LOG_FOI4_MSG, sizeof(log_Foilboat_Failsafe),
+      "FOI4", "QIIBB", "TimeUS,Fault,Armed,Resp,Sev", "s----", "F----", true },
 };
 
 uint8_t Rover::get_num_log_structures() const

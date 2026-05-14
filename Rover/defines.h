@@ -21,6 +21,9 @@ enum LoggingParameters {
     LOG_FOI_MSG,
     LOG_FOI2_MSG,
     LOG_FOI3_MSG,
+    // PR14a D2: FoilboatFailsafe state-machine streaming log (10 Hz, per
+    // synthesis §4).  Fault mask, Armed mask, dispatched response, severity.
+    LOG_FOI4_MSG,
 };
 
 #define MASK_LOG_ATTITUDE_FAST  (1<<0)
