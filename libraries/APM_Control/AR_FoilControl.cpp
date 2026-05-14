@@ -17,6 +17,7 @@
 
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_HAL/AP_HAL.h>
+#include <AP_Logger/AP_Logger.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_Math/rotations.h>
 #include <RC_Channel/RC_Channel.h>
@@ -463,6 +464,11 @@ AR_FoilControl::AR_FoilControl() :
     _last_throttle_us(0),
     _last_failsafe_us(0),
     _last_inner_dt(0.0025f),
+    // PR14a D3: matrix-detector snapshot state — zero-init for first tick.
+    _last_height_err_m(0.0f),
+    _att_err_lpf_rad(0.0f),
+    _h_integrator_clamp_dwell_s(0.0f),
+    _height_pid_winding(false),
     _servo_ranges_set(false)
 {
     _singleton = this;
@@ -511,6 +517,25 @@ bool AR_FoilControl::consume_failsafe_event_log_pending()
         return true;
     }
     return false;
+}
+
+// PR14a D3: matrix-detector getters (synthesis §3.1).  Return cached
+// snapshots updated each tick by update_outer / update_inner.  Const,
+// non-mutating, safe to call from a different scheduler task at any time.
+
+bool AR_FoilControl::height_pid_winding() const
+{
+    return _height_pid_winding;
+}
+
+float AR_FoilControl::last_height_error_m() const
+{
+    return _last_height_err_m;
+}
+
+float AR_FoilControl::attitude_error_rad() const
+{
+    return _att_err_lpf_rad;
 }
 
 // PR7a D3: push a single flap-at-limit sample into the circular buffer and
@@ -861,6 +886,32 @@ void AR_FoilControl::update_outer()
     // _r_setpoint_rad_s, _canard_preload_last, _last_gain_scale, _sat_trigger_armed,
     // _sat_duty_cycle) are exposed via const getters; Rover pulls them at
     // its own logging cadence.
+
+    // PR14a D3: matrix-detector snapshots — purely additive bookkeeping for
+    // the new const getters consumed by FoilboatFailsafe (PR14b/c).  No
+    // control behaviour change: only read existing state into cache fields.
+    //
+    //   _last_height_err_m       — h_meas − h_cmd, NaN when LIDAR is invalid
+    //                              so the matrix's H_AGL_DISAGREE row can
+    //                              skip the tick rather than fire on stale.
+    //   _h_integrator_clamp_dwell_s — seconds the height-PID integrator has
+    //                              been within ε of its ±0.105 rad clamp.
+    //   _height_pid_winding      — dwell > 1 s (K1 INTEGRATOR_WIND_UP row).
+    if (isfinite(h_meas)) {
+        _last_height_err_m = h_meas - _height_target_m;
+    } else {
+        _last_height_err_m = AP_Logger::quiet_nanf();
+    }
+    {
+        const float clamp_eps = 1e-4f;
+        const float clamp_lim = AR_FOILCONTROL_THETA_CMD_LIMIT_RAD;
+        if (fabsf(_h_integrator) >= clamp_lim - clamp_eps) {
+            _h_integrator_clamp_dwell_s += dt;
+        } else {
+            _h_integrator_clamp_dwell_s = 0.0f;
+        }
+        _height_pid_winding = (_h_integrator_clamp_dwell_s > 1.0f);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1003,6 +1054,21 @@ void AR_FoilControl::update_inner()
         (fabsf(_main_cmd_rad)   >= sat_thr) ||
         (fabsf(_rudder_cmd_rad) >= sat_thr);
     push_sat_sample(flap_at_limit);
+
+    // PR14a D3: attitude-error LPF for matrix-detector consumption.  Pure
+    // bookkeeping: K2 ATT_DIVERGE (synthesis §2) needs a low-passed (θ_cmd −
+    // θ_meas) signal so a single noisy sample at the inner-loop rate can't
+    // trip the dwell.  τ = 0.1 s gives a 1.6 Hz corner — fast enough to
+    // catch real divergence (typical K2 dwell ≥ 200 ms) and slow enough to
+    // reject the 50 Hz LIDAR-noise re-injection into θ_cmd via the height
+    // loop.  PR14b owns the actual K2 threshold + dwell.  Reuses the
+    // `theta_meas` already snapshotted above for the pitch-attitude wrapper.
+    {
+        const float att_err = _theta_cmd_rad - theta_meas;
+        const float att_lp_tau_s = 0.1f;
+        const float att_alpha = dt / (att_lp_tau_s + dt);
+        _att_err_lpf_rad += att_alpha * (att_err - _att_err_lpf_rad);
+    }
 
     // roll_diff_cmd is unused in v0; reference once to silence -Wunused.
     (void)roll_diff_cmd;

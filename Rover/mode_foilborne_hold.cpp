@@ -243,13 +243,19 @@ bool ModeFoilborneHold::_enter()
 
 void ModeFoilborneHold::update()
 {
-    // PR7a D1: failsafe-descend handover (unchanged).  AR_FoilControl raises
-    // this latch when the duty-cycle saturation trigger has held under the
-    // armed gate for FOIL_FAIL_DWELL ms.  notify_mode_change() in
-    // AutoDescend::_enter wipes the latch + dwell + duty buffer so the
-    // failsafe state machine starts fresh in the descent mode.
-    if (rover.g2.foil_control.should_failsafe_descend()) {
-        rover.set_mode(rover.mode_auto_descend, ModeReason::FAILSAFE);
+    // PR14a D4: failsafe-descend handover migrated through FoilboatFailsafe
+    // per synthesis §5.1 single-dispatch rule.  The PR7a saturation-duty
+    // logic still lives in AR_FoilControl::should_failsafe_descend() — it's
+    // consumed by FoilboatFailsafe::check() as the matrix's A3 (FLAP_RATE_SAT)
+    // row and re-asserted here via should_descend().  Behaviour-preserving:
+    // when the duty trigger latches, FoilboatFailsafe immediately raises
+    // should_descend() on the next 10 Hz tick (worst-case 100 ms slip vs the
+    // pre-PR14a path).  ModeReason switches to FOILBOAT_FAILSAFE so post-
+    // flight log filtering can distinguish foilboat-specific dispatch from
+    // the generic FAILSAFE reason.  AutoDescend::_enter still calls
+    // foil_control.notify_mode_change() which wipes the underlying latch.
+    if (rover.foilboat_failsafe.should_descend()) {
+        rover.set_mode(rover.mode_auto_descend, ModeReason::FOILBOAT_FAILSAFE);
         return;
     }
 

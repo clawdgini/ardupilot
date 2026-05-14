@@ -139,6 +139,34 @@ public:
     // once per latch (the tick on which the AUTO_DESCEND request first fires).
     bool consume_failsafe_event_log_pending();
 
+    // --- PR14a D3: getters consumed by FoilboatFailsafe matrix detectors --
+    // Five read-only getters per synthesis §3.1.  PR14a does not call most of
+    // these yet — they are infrastructure for PR14b/c per-fault detectors so
+    // those PRs are pure additions to FoilboatFailsafe::check().
+    //
+    // foilborne() — foilborne-only arming gate (synthesis §5.2): foilborne-
+    // only fault rows (15 of 23, see §2) `if (!foilborne()) return;` at the
+    // top of their per-fault check.
+    bool     foilborne()              const { return _foilborne_now; }
+    // height_pid_winding() — true when the height-loop integrator has been
+    // at its anti-windup clamp for >1 s.  Catches a stuck flap that the
+    // saturation-duty trigger may also catch but at coarser dwell (K1
+    // INTEGRATOR_WIND_UP row, synthesis §2).
+    bool     height_pid_winding()     const;
+    // last_height_error_m() — h_meas − h_cmd (signed, m).  Consumed by the
+    // S6 H_AGL_DISAGREE row and by any future "height divergence" rate
+    // limiter.
+    float    last_height_error_m()    const;
+    // attitude_error_rad() — θ_cmd − θ_meas (signed, rad), LPF.  Consumed by
+    // the K2 ATT_DIVERGE row.  Returns the last LPF-filtered sample so two
+    // consecutive get_*() calls in the same matrix tick are coherent.
+    float    attitude_error_rad()     const;
+    // last_inner_loop_us() — micros() of the last update_inner() tick.  The
+    // matrix uses this to detect a stuck inner loop (controller hang) at
+    // fault-tree scope — Rover::failsafe_check is at CPU-loop scope; this is
+    // at controller-task scope.
+    uint32_t last_inner_loop_us()     const { return _last_inner_us; }
+
     // parameter var table
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -302,6 +330,16 @@ private:
     uint32_t _last_throttle_us;
     uint32_t _last_failsafe_us;
     float    _last_inner_dt;          // for the lead compensator at 400 Hz
+
+    // --- PR14a D3: matrix-detector snapshots ------------------------------
+    // Read-only tracking state for the new getters in §3.1.  These are
+    // populated as side-state writes in update_outer / update_inner (purely
+    // additive — control behaviour is unchanged); the getters return the
+    // cached value so a matrix tick at 10 Hz sees a coherent snapshot.
+    float    _last_height_err_m;        // h_meas − h_cmd, refreshed each outer tick
+    float    _att_err_lpf_rad;          // θ_cmd − θ_meas, LPF at the inner-loop rate
+    float    _h_integrator_clamp_dwell_s; // seconds _h_integrator has been at clamp
+    bool     _height_pid_winding;       // dwell > 1 s
 
     // init() bookkeeping
     bool _servo_ranges_set;
